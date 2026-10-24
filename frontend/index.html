@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Trustworthy Financial Research & Decision Support</title>
+  <!-- Core and Component Stylesheets -->
+  <link rel="stylesheet" href="assets/css/styles.css">
+  <link rel="stylesheet" href="assets/css/components.css">
+</head>
+<body>
+  <div id="app" class="app-layout">
+    <header class="app-header">
+      <div class="header-branding">
+        <h1 class="app-title">Trustworthy Financial Research</h1>
+        <span class="badge badge-subtle">Decision Support System</span>
+      </div>
+      <nav class="app-nav" id="main-nav">
+        <button class="nav-tab active" data-page="research">Company Research</button>
+        <button class="nav-tab" data-page="documents">Document Vault</button>
+        <button class="nav-tab" data-page="reports">Research Reports</button>
+        <button class="nav-tab" data-page="review">Human Review</button>
+      </nav>
+    </header>
+
+    <main class="app-main" id="content-area">
+      <!-- Semantic container populated dynamically by ES modules in Phase 4 -->
+      <section class="placeholder-notice">
+        <h2>Phase 0 Initialized</h2>
+        <p>Frontend scaffold established. View modules and interactive components will be connected in Phase 4.</p>
+      </section>
+    </main>
+
+    <footer class="app-footer">
+      <p class="footer-disclaimer">
+        Strict Decision Support Mode — Not an automated broker or execution agent. All research findings require independent analyst verification.
+      </p>
+    </footer>
+  </div>
+
+  <!-- Application Entry Point (ES Module) -->
+  <script type="module" src="assets/js/app.js"></script>
+</body>
+</html>

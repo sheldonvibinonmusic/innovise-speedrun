@@ -1,0 +1,61 @@
+/* ==============================================================================
+   UI Components Stylesheet
+   Specific component classes for Claim Cards, Evidence Panels, and Audit Cockpits
+   ============================================================================== */
+
+/* Workflow & Agent Status Indicator */
+.workflow-status-bar {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+  padding: 1rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+/* Claim Cards & Verification Badges */
+.claim-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.claim-badge {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.15rem 0.4rem;
+  border-radius: var(--radius-sm);
+  text-transform: uppercase;
+}
+
+.badge-pass { background: #dcfce7; color: #15803d; }
+.badge-qualify { background: #fef9c3; color: #854d0e; }
+.badge-block { background: #fee2e2; color: #b91c1c; }
+.badge-indeterminate { background: #f1f5f9; color: #64748b; }
+.badge-retrieve-more { background: #e0f2fe; color: #0369a1; }
+
+/* Side-by-side Evidence Panel & Citation Inspector */
+.evidence-drawer {
+  background: #f8fafc;
+  border-left: 1px solid var(--color-border);
+  padding: 1rem;
+}
+
+.citation-quote {
+  font-family: var(--font-mono);
+  font-size: 0.825rem;
+  background: #ffffff;
+  border-left: 3px solid var(--color-primary);
+  padding: 0.5rem 0.75rem;
+  margin: 0.5rem 0;
+}
+
+/* Human Review Controls */
+.review-actions-group {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
