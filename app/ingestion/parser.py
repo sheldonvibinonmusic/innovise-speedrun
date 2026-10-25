@@ -354,12 +354,109 @@ class DocumentParser:
             parser_version="python-pptx-1.0",
         )
 
+    def parse_html(self, file_path: Path, document_id: Optional[str] = None) -> ParsedDocument:
+        """Parse SEC EDGAR HTML/HTM filing or web disclosure into structured tables and pages."""
+        doc_id = document_id or f"doc_{uuid.uuid4().hex[:12]}"
+        path = Path(file_path)
+        if not path.exists():
+            return ParsedDocument(
+                document_id=doc_id,
+                status="FAILED",
+                warnings=[f"File '{path}' does not exist on disk."],
+                parser_version="bs4-html-sec",
+            )
+
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(content, "html.parser")
+
+            tables: List[ParsedTable] = []
+            for t_idx, tbl in enumerate(soup.find_all("table")):
+                rows_data: List[List[str]] = []
+                for tr in tbl.find_all("tr"):
+                    row_cells = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
+                    if any(row_cells):
+                        rows_data.append(row_cells)
+                if not rows_data:
+                    continue
+                headers = rows_data[0]
+                body_rows = rows_data[1:] if len(rows_data) > 1 else rows_data
+                table_text = "\n".join([" | ".join(r) for r in rows_data])
+                tables.append(
+                    ParsedTable(
+                        table_id=f"tbl_{doc_id}_h{t_idx + 1}",
+                        page_number=(t_idx // 3) + 1,
+                        title=f"Table {t_idx + 1}",
+                        headers=headers,
+                        rows=body_rows,
+                        raw_text=table_text,
+                    )
+                )
+
+            # Extract clean narrative text
+            raw_text = soup.get_text(separator="\n", strip=True)
+            paragraphs = [p for p in raw_text.split("\n") if len(p.strip()) > 10]
+            pages: List[ParsedPage] = []
+            page_chunk_size = 2500
+            current_page_text = ""
+            current_page_num = 1
+
+            for p in paragraphs:
+                if len(current_page_text) + len(p) > page_chunk_size and current_page_text:
+                    p_tables = [t for t in tables if t.page_number == current_page_num]
+                    pages.append(
+                        ParsedPage(
+                            page_number=current_page_num,
+                            text=current_page_text.strip(),
+                            tables=p_tables,
+                            is_blank=False,
+                        )
+                    )
+                    current_page_num += 1
+                    current_page_text = p + "\n"
+                else:
+                    current_page_text += p + "\n"
+
+            if current_page_text.strip():
+                p_tables = [t for t in tables if t.page_number == current_page_num]
+                pages.append(
+                    ParsedPage(
+                        page_number=current_page_num,
+                        text=current_page_text.strip(),
+                        tables=p_tables,
+                        is_blank=False,
+                    )
+                )
+
+            return ParsedDocument(
+                document_id=doc_id,
+                pages=pages,
+                tables=tables,
+                full_text=raw_text,
+                page_count=len(pages),
+                status="COMPLETE",
+                warnings=[],
+                parser_version="bs4-html-sec",
+            )
+        except Exception as exc:
+            return ParsedDocument(
+                document_id=doc_id,
+                status="FAILED",
+                warnings=[f"HTML parser error: {str(exc)}"],
+                parser_version="bs4-html-sec",
+            )
+
     def parse_document(self, file_path: Path, document_id: Optional[str] = None) -> ParsedDocument:
-        """Route parsing based on file extension (.pdf or .pptx)."""
+        """Route parsing based on file extension (.pdf, .pptx, or .htm/.html)."""
         suffix = Path(file_path).suffix.lower()
         if suffix == ".pdf":
             return self.parse_pdf(file_path, document_id=document_id)
         elif suffix == ".pptx":
             return self.parse_pptx(file_path, document_id=document_id)
+        elif suffix in (".htm", ".html", ".txt"):
+            return self.parse_html(file_path, document_id=document_id)
         else:
-            raise ValueError(f"Unsupported document format '{suffix}'. Only .pdf and .pptx are supported.")
+            raise ValueError(f"Unsupported document format '{suffix}'. Supported formats: .pdf, .pptx, .htm, .html")

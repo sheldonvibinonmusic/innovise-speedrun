@@ -53,6 +53,7 @@ data/qdrant/*
 
 # Testing & Coverage
 .pytest_cache/
+.pytest_temp/
 .coverage
 htmlcov/
 .tox/

@@ -68,9 +68,13 @@ def create_run(
         status_or_code="INFO",
         details={
             "action": "run_created",
+            "event_type": "RUN_CREATED",
+            "event_message": f"Run {run_id} initialized for {payload.company_ticker or 'entity'}",
             "research_question": payload.research_question,
             "analytical_areas": payload.analytical_areas,
             "document_count": len(payload.document_ids),
+            "website_url": payload.website_url,
+            "acquisition_mode": payload.acquisition_mode,
         },
     )
 
@@ -153,19 +157,25 @@ def get_run_trace(
         )
 
     events = repo.get_events_by_run_id(run_id)
-    event_responses = [
-        AuditEventResponse(
-            event_id=e.id,
-            run_id=e.run_id,
-            node_or_stage=e.node_or_stage,
-            event_timestamp=e.event_timestamp,
-            status_or_code=e.status_or_code,
-            duration_ms=e.duration_ms,
-            details=e.details,
-            model_or_parser_version=e.model_or_parser_version,
+    event_responses = []
+    for e in events:
+        details = e.details or {}
+        event_type = details.get("event_type") or details.get("action") or e.status_or_code or e.node_or_stage
+        event_message = details.get("event_message") or details.get("message") or f"{e.node_or_stage}: {e.status_or_code}"
+        event_responses.append(
+            AuditEventResponse(
+                event_id=e.id,
+                run_id=e.run_id,
+                node_or_stage=e.node_or_stage,
+                event_timestamp=e.event_timestamp,
+                status_or_code=e.status_or_code,
+                duration_ms=e.duration_ms,
+                details=details,
+                model_or_parser_version=e.model_or_parser_version,
+                event_type=event_type,
+                event_message=event_message,
+            )
         )
-        for e in events
-    ]
 
     return RunTraceResponse(
         run_id=run_id,
@@ -193,6 +203,30 @@ async def execute_run(
 
     from app.workflow.graph import research_graph_app
 
+    # Read stored website_url and acquisition_mode from creation audit event
+    initial_events = repo.get_events_by_run_id(run_id)
+    stored_web_url = None
+    stored_acq_mode = "combined" if run.input_document_ids else "sec_edgar"
+    for ev in initial_events:
+        if ev.details and isinstance(ev.details, dict):
+            if ev.details.get("website_url"):
+                stored_web_url = ev.details["website_url"]
+            if ev.details.get("acquisition_mode"):
+                stored_acq_mode = ev.details["acquisition_mode"]
+
+    # Transition run to RUNNING state in SQLite
+    repo.update_run_status(run_id, status=RunStatus.RUNNING.value)
+    repo.create_event(
+        run_id=run_id,
+        node_or_stage="execution_start",
+        status_or_code="INFO",
+        details={
+            "action": "ACQUIRE_SOURCES_START",
+            "event_type": "ACQUIRE_SOURCES_START",
+            "event_message": f"Execution started for {run.company.ticker if run.company else run.id}",
+        },
+    )
+
     initial_state = {
         "run_id": run.id,
         "research_question": run.research_question,
@@ -201,11 +235,33 @@ async def execute_run(
         "jurisdiction": run.jurisdiction,
         "requested_periods": run.requested_periods,
         "document_ids": run.input_document_ids,
-        "acquisition_mode": "combined" if run.input_document_ids else "sec_edgar",
+        "seed_website_url": stored_web_url,
+        "acquisition_mode": stored_acq_mode,
         "remaining_repair_budget": 2,
     }
 
-    final_state = await research_graph_app.ainvoke(initial_state)
+    try:
+        final_state = await research_graph_app.ainvoke(initial_state)
+    except Exception as exc:
+        import traceback
+        tb = traceback.format_exc()
+        print(f"\n[EXECUTION ERROR TRACEBACK]:\n{tb}")
+        repo.update_run_status(run_id, status=RunStatus.FAILED.value, error_summary=str(exc))
+        repo.create_event(
+            run_id=run_id,
+            node_or_stage="execution_failed",
+            status_or_code="ERROR",
+            details={
+                "event_type": "EXECUTION_FAILED",
+                "event_message": f"Workflow failed: {str(exc)}",
+                "error": str(exc),
+                "traceback": tb,
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Research workflow execution failed: {str(exc)}",
+        )
 
     repo.db.expire_all()
     updated_run = repo.get_run_by_id(run_id)

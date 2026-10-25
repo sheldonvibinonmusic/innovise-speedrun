@@ -95,6 +95,7 @@ function cacheDOMElements() {
     // Report Elements
     reportHeaderTitle: document.getElementById('reportHeaderTitle'),
     reportHeaderInquiry: document.getElementById('reportHeaderInquiry'),
+    exportPdfBtn: document.getElementById('exportPdfBtn'),
     reportVerificationStatusBadge: document.getElementById('reportVerificationStatusBadge'),
     execSummaryContent: document.getElementById('execSummaryContent'),
     metricsScorecardGrid: document.getElementById('metricsScorecardGrid'),
@@ -201,6 +202,16 @@ async function checkSystemHealth() {
       appState.set({ isBackendHealthy: false, healthDetails: health });
     }
   } catch (err) {
+    if (err.status === 503 || (err.data && err.data.database_connected === false)) {
+      DOM.statusDot.className = 'status-dot degraded';
+      DOM.statusText.textContent = 'SYSTEM DEGRADED';
+      if (DOM.backendStatusPill) {
+        DOM.backendStatusPill.title = 'FastAPI online but SQLite database is unavailable';
+      }
+      appState.set({ isBackendHealthy: false, healthDetails: err.data });
+      showToast('FastAPI backend online, but database connectivity is degraded.', 'info');
+      return;
+    }
     DOM.statusDot.className = 'status-dot offline';
     DOM.statusText.textContent = 'BACKEND OFFLINE';
     if (DOM.backendStatusPill) {
@@ -430,9 +441,21 @@ async function uploadQueuedFiles() {
           }
         );
 
-        current.status = 'INDEXED';
-        current.percent = 100;
-        current.documentId = uploadResult.uploaded_documents?.[0]?.document_id || null;
+        const uploadedDoc = uploadResult.uploaded_documents?.[0];
+        current.documentId = uploadedDoc?.document_id || null;
+        const ingestStatus = (uploadedDoc?.status || uploadedDoc?.ingestion_status || 'REGISTERED').toUpperCase();
+
+        if (ingestStatus === 'INDEXED' || ingestStatus === 'PARTIALLY_PROCESSED') {
+          current.status = 'INDEXED';
+          current.percent = 100;
+        } else if (ingestStatus === 'FAILED') {
+          current.status = 'FAILED';
+          current.error = uploadedDoc?.warnings || 'Document parsing/indexing failed';
+          showToast(`Ingestion failed for ${current.name}: ${current.error}`, 'error');
+        } else {
+          current.status = ingestStatus;
+          current.percent = 100;
+        }
       } catch (err) {
         current.status = 'FAILED';
         current.error = err.message;
@@ -506,8 +529,22 @@ async function startResearchRun() {
     let pollInterval = null;
     let isTerminated = false;
 
+    let pollCount = 0;
+    const maxPolls = 150; // Bounded timeout (~135 seconds)
+
     const pollStatus = async () => {
       if (isTerminated) return;
+      pollCount++;
+      if (pollCount > maxPolls) {
+        isTerminated = true;
+        if (pollInterval) clearInterval(pollInterval);
+        appState.set({ runStatus: 'failed' });
+        DOM.progressTitle.textContent = 'Execution Timeout';
+        DOM.progressSubtitle.textContent = 'POLL LIMIT REACHED \u2022 TERMINATED';
+        showToast('Research execution timed out waiting for server completion.', 'error');
+        return;
+      }
+
       try {
         const [runData, traceData] = await Promise.all([
           api.getRun(runId),
@@ -524,14 +561,16 @@ async function startResearchRun() {
 
         if (runData.status === 'completed' || runData.status === 'completed_with_warnings') {
           isTerminated = true;
-          clearInterval(pollInterval);
+          if (pollInterval) clearInterval(pollInterval);
           updateStageProgress(6, 'Synthesis complete. Loading report...');
-          setTimeout(() => loadAndDisplayReport(runId), 800);
+          setTimeout(() => loadAndDisplayReport(runId), 600);
         } else if (runData.status === 'failed') {
           isTerminated = true;
-          clearInterval(pollInterval);
-          DOM.progressTitle.textContent = 'Research Run Failed';
-          showToast(`Research run terminated: ${runData.error_summary || 'Verification blocked'}`, 'error');
+          if (pollInterval) clearInterval(pollInterval);
+          DOM.progressTitle.textContent = 'Research Run Completed';
+          DOM.progressSubtitle.textContent = `STATUS: ${escapeHTML(runData.error_summary || 'Verification Blocked')}`;
+          showToast(`Research run concluded with verification block: ${runData.error_summary || 'Blocked'}`, 'warning');
+          setTimeout(() => loadAndDisplayReport(runId), 600);
         }
       } catch (pollErr) {
         console.warn('Status poll warning:', pollErr);
@@ -541,23 +580,41 @@ async function startResearchRun() {
     pollInterval = setInterval(pollStatus, 900);
 
     // 4. Trigger LangGraph Workflow Execution
-    const execRes = await api.executeRun(runId);
-    if (execRes.status === 'completed' || execRes.status === 'completed_with_warnings') {
-      if (!isTerminated) {
-        isTerminated = true;
-        clearInterval(pollInterval);
-        loadAndDisplayReport(runId);
+    try {
+      const execRes = await api.executeRun(runId);
+      if (execRes.status === 'completed' || execRes.status === 'completed_with_warnings') {
+        if (!isTerminated) {
+          isTerminated = true;
+          if (pollInterval) clearInterval(pollInterval);
+          loadAndDisplayReport(runId);
+        }
+      } else if (execRes.status === 'failed') {
+        if (!isTerminated) {
+          isTerminated = true;
+          if (pollInterval) clearInterval(pollInterval);
+          DOM.progressTitle.textContent = 'Research Run Completed';
+          DOM.progressSubtitle.textContent = 'STATUS: Verification Blocked';
+          showToast('Research run completed with BLOCKED verification status. Loading audit dossier...', 'warning');
+          setTimeout(() => loadAndDisplayReport(runId), 600);
+        }
       }
+    } catch (execErr) {
+      isTerminated = true;
+      if (pollInterval) clearInterval(pollInterval);
+      appState.set({ runStatus: 'failed' });
+      DOM.progressTitle.textContent = 'Execution Failed';
+      DOM.progressSubtitle.textContent = `ERROR: ${escapeHTML(execErr.message || 'Workflow halted')}`;
+      showToast(`Execution error: ${execErr.message}`, 'error');
     }
   } catch (err) {
-    DOM.progressTitle.textContent = 'Execution Error';
-    showToast(`Execution error: ${err.message}`, 'error');
+    DOM.progressTitle.textContent = 'Initialization Error';
+    showToast(`Initialization error: ${err.message}`, 'error');
   }
 }
 
 // Map actual backend workflow events to the 6 concise UI stages
 function mapTraceEventsToStages(events, runData) {
-  const eventTypes = events.map((e) => e.event_type);
+  const eventTypes = events.map((e) => e.event_type || e.node_or_stage || e.status_or_code);
 
   // Stage 1: Document Acquisition
   if (eventTypes.includes('RUN_CREATED') || eventTypes.includes('ACQUIRE_SOURCES_START')) {
@@ -635,7 +692,13 @@ async function loadAndDisplayReport(runId) {
 
     renderReport(report);
     switchView('report');
-    showToast('Research report synthesized and verified successfully.', 'success');
+    if (report.verification_status === 'BLOCKED') {
+      showToast('Research dossier loaded. System issued BLOCKED verification.', 'warning');
+    } else if (report.verification_status === 'QUALIFIED') {
+      showToast('Research report synthesized with audit qualifications.', 'info');
+    } else {
+      showToast('Research report synthesized and verified successfully.', 'success');
+    }
   } catch (err) {
     showToast(`Failed to load synthesized report: ${err.message}`, 'error');
   }
@@ -766,12 +829,12 @@ function renderReport(report) {
         evidence_citation_judge: 'Evidence Citation Judge',
         numerical_integrity_gate: 'Numerical Integrity Gate',
         adversarial_skeptic_judge: 'Adversarial Skeptic Judge',
-      }[v.judge_name] || v.judge_name || 'Verification Judge';
+      }[v.judge_name] || v.judge_name || v.judge_role || 'Verification Judge';
 
-      const vStr = String(v.verdict || 'PASS').toUpperCase();
+      const vStr = String(v.verdict || v.overall_verdict || 'INDETERMINATE').toUpperCase();
       const isPass = vStr === 'PASS';
       const isBlock = vStr === 'BLOCK';
-      const isQualify = vStr === 'QUALIFY';
+      const isQualify = vStr === 'QUALIFY' || vStr === 'RETRIEVE_MORE';
 
       const color = isPass ? 'var(--status-verified)' : isQualify ? 'var(--status-qualified)' : isBlock ? 'var(--status-blocked)' : 'var(--accent-stone)';
       const icon = isPass ? '&check;' : isBlock ? '&times;' : '!';
@@ -780,7 +843,7 @@ function renderReport(report) {
         <div class="metric-card">
           <div class="metric-name">${escapeHTML(judgeTitle)}</div>
           <div class="metric-value" style="font-size:16px; color:${color};">${icon} ${escapeHTML(vStr)}</div>
-          <div style="font-size:11px; color:var(--text-secondary); margin-top:4px;">${escapeHTML(v.rationale || 'Audit completed without discrepancies.')}</div>
+          <div style="font-size:11px; color:var(--text-secondary); margin-top:4px;">${escapeHTML(v.rationale || v.concise_explanation || 'Audit verdict recorded.')}</div>
         </div>
       `;
     }).join('');
@@ -913,16 +976,19 @@ function renderFinancialChart(calcs, ticker) {
 // ==============================================================================
 function openClaimInspector(claim) {
   DOM.inspectorClaimText.textContent = claim.claim_text;
-  DOM.inspectorDocId.textContent = claim.document_id || 'DOC_FY24_PRIMARY';
-  DOM.inspectorPageNum.textContent = claim.page_number ? `Page ${claim.page_number}` : 'Consolidated Table P.2';
+  DOM.inspectorDocId.textContent = claim.document_id || 'Unspecified Document';
+  DOM.inspectorPageNum.textContent = claim.page_number ? `Page ${claim.page_number}` : 'N/A';
 
   // Safe text rendering to prevent XSS from source documents
   DOM.inspectorExcerptText.textContent = claim.evidence_excerpt || claim.claim_text;
 
-  const status = claim.status || 'VERIFIED';
+  const rawStatus = (claim.verification_status || claim.status || 'needs_human_review').toUpperCase();
+  const isVerified = rawStatus === 'VERIFIED' || rawStatus === 'SUPPORTED';
+  const isBlocked = rawStatus === 'BLOCKED' || rawStatus === 'CONTRADICTED' || rawStatus === 'REJECTED';
+  const badgeClass = isVerified ? 'badge-verified' : isBlocked ? 'badge-blocked' : 'badge-qualified';
   DOM.inspectorVerdictBadge.innerHTML = `
-    <span class="report-verification-badge ${status === 'VERIFIED' ? 'badge-verified' : 'badge-qualified'}">
-      ${status}
+    <span class="report-verification-badge ${badgeClass}">
+      ${escapeHTML(rawStatus)}
     </span>
   `;
 
@@ -985,6 +1051,9 @@ async function handleSubmitReview() {
       decision === 'APPROVED' ? 'badge-verified' : decision === 'QUALIFIED' ? 'badge-qualified' : 'badge-blocked'
     }`;
 
+    // Immediately reload persisted report so updated claim overrides and review history reflect in UI
+    await loadAndDisplayReport(runId);
+
     showToast(`Human sign-off '${decision}' successfully recorded in audit log.`, 'success');
   } catch (err) {
     showToast(`Review submission failed: ${err.message}`, 'error');
@@ -1014,8 +1083,8 @@ function renderTraceView() {
         ${ev.event_timestamp ? new Date(ev.event_timestamp).toLocaleTimeString() : 'N/A'}
       </div>
       <div>
-        <div style="font-weight:500; color:var(--text-primary); font-size:12px;">${ev.event_type}</div>
-        <div style="color:var(--text-secondary); font-size:11px;">${escapeHTML(ev.event_message || '')}</div>
+        <div style="font-weight:500; color:var(--text-primary); font-size:12px;">${escapeHTML(ev.event_type || ev.node_or_stage || 'EVENT')}</div>
+        <div style="color:var(--text-secondary); font-size:11px;">${escapeHTML(ev.event_message || ev.status_or_code || '')}</div>
       </div>
       <div>
         <span class="queue-status-badge badge-indexed">RECORDED</span>
@@ -1095,6 +1164,16 @@ export function initApp() {
 
   // Progress Cancel Button
   DOM.cancelRunBtn?.addEventListener('click', () => switchView('landing'));
+
+  // Export PDF Dossier Action
+  DOM.exportPdfBtn?.addEventListener('click', () => {
+    const currentRun = appState.get('currentRunId');
+    if (currentRun) {
+      window.open(api.getReportPdfUrl(currentRun), '_blank');
+    } else {
+      showToast('No active research report available for export.', 'warning');
+    }
+  });
 
   // Human Review Cockpit Decision Buttons
   const decisionBtns = [DOM.decApproveBtn, DOM.decQualifyBtn, DOM.decRejectBtn];

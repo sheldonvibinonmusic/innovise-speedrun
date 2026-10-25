@@ -35,8 +35,11 @@ def sanitize_filename(filename: str) -> str:
     """Sanitize user-provided filename to prevent path traversal or filesystem corruption."""
     clean = os.path.basename(filename)
     clean = re.sub(r"[^\w\.\-\_]", "_", clean)
+    ext = Path(filename).suffix.lower()
+    if ext not in (".pdf", ".pptx"):
+        ext = ".pdf"
     if not clean or clean.startswith("."):
-        clean = f"document_{uuid.uuid4().hex[:8]}.pdf"
+        clean = f"document_{uuid.uuid4().hex[:8]}{ext}"
     return clean
 
 
@@ -121,12 +124,15 @@ async def upload_documents(
                     detail=f"Uploaded file '{original_name}' is empty (0 bytes).",
                 )
 
-            if not header_bytes.startswith(b"%PDF-"):
+            is_pdf = header_bytes.startswith(b"%PDF-")
+            is_pptx = header_bytes.startswith(b"PK\x03\x04") and (sanitized_name.lower().endswith(".pptx") or original_name.lower().endswith(".pptx"))
+
+            if not (is_pdf or is_pptx):
                 if temp_destination.exists():
                     temp_destination.unlink()
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Invalid file format for '{original_name}'. The file signature does not match a valid PDF document.",
+                    detail=f"Invalid file format for '{original_name}'. The file signature does not match a valid PDF document or supported PowerPoint presentation.",
                 )
 
             sha256_digest = hasher.hexdigest()
@@ -175,7 +181,7 @@ async def upload_documents(
                     sha256_hash=sha256_digest,
                     source_type="user_upload",
                     company_id=company_id,
-                    document_type=document_type,
+                    document_type="Presentation" if is_pptx and document_type == "10-K" else document_type,
                     jurisdiction=jurisdiction,
                     reporting_period=reporting_period,
                     ingestion_status="REGISTERED",

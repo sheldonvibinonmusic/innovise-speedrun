@@ -298,31 +298,49 @@ class SecEdgarConnector(BaseSourceConnector):
             norm_year = norm_period.get("normalized_year")
             norm_quarter = norm_period.get("quarter")
             is_s1 = norm_period.get("is_s1_form")
+            is_sem = norm_period.get("is_semester")
 
             filtered: List[DiscoveredFiling] = []
             for d in discovered:
                 f_date = str(d.filing_date or "")
                 r_date = str(d.report_date or "")
+                form_upper = (d.form or "").upper()
 
-                # Direct match with raw filter string
-                match = period_filter.lower() in f_date.lower() or period_filter.lower() in r_date.lower()
+                match = False
 
-                # Match by normalized 4-digit fiscal year
-                if not match and norm_year:
-                    match = norm_year in f_date or norm_year in r_date
-
-                # Match by quarter (e.g. Q1 filings usually filed in April/May)
-                if not match and norm_quarter:
+                if is_s1 and not is_sem:
+                    # Explicit Form S-1 registration statement request
+                    if "S-1" in form_upper:
+                        match = (not norm_year) or (norm_year in f_date or norm_year in r_date)
+                elif is_s1 and is_sem:
+                    # Ambiguous "S1" input (Semester 1 / Form S-1)
+                    # Match Form S-1 if present, or first-half filings (Jan-June)
+                    if "S-1" in form_upper:
+                        match = (not norm_year) or (norm_year in f_date or norm_year in r_date)
+                    elif norm_year and (norm_year in f_date or norm_year in r_date):
+                        # Only match filings in the first half of the year (H1)
+                        month_match = re.search(r"-(0[1-6])-", f_date)
+                        if month_match:
+                            match = True
+                elif norm_quarter:
+                    # Quarter-specific filing (e.g. Q1, Q2, Q3 -> 10-Q; Q4 -> 10-K)
+                    if norm_year and not (norm_year in f_date or norm_year in r_date):
+                        continue
                     if norm_quarter == "Q1" and any(m in f_date for m in ("-03-", "-04-", "-05-")):
                         match = True
                     elif norm_quarter == "Q2" and any(m in f_date for m in ("-06-", "-07-", "-08-")):
                         match = True
                     elif norm_quarter == "Q3" and any(m in f_date for m in ("-09-", "-10-", "-11-")):
                         match = True
-
-                # If Form S-1 was requested, prioritize S-1 form match
-                if not match and is_s1:
-                    match = "S-1" in d.form.upper()
+                    elif norm_quarter == "Q4" and "10-K" in form_upper:
+                        match = True
+                else:
+                    # Standard annual or raw string match
+                    if period_filter.lower() in f_date.lower() or period_filter.lower() in r_date.lower():
+                        match = True
+                    elif norm_year and (norm_year in f_date or norm_year in r_date):
+                        # Annual period should prioritize 10-K / annual forms
+                        match = True
 
                 if match:
                     filtered.append(d)
@@ -334,9 +352,12 @@ class SecEdgarConnector(BaseSourceConnector):
         if period_filter and not discovered:
             status = "NO_MATCHING_PERIOD"
             periods_preview = ", ".join(sorted(list(set(available_periods)), reverse=True)[:6])
+            extra_hint = ""
+            if norm_period.get("is_s1_form"):
+                extra_hint = " Note: 'S1' can be ambiguous between Form S-1 registration statements and Semester 1 (H1). For annual filings, try 'FY24'."
             warnings.append(
                 f"No {', '.join(target_forms)} filings found matching requested period '{period_filter}'. "
-                f"Available periods: {periods_preview or 'None discovered'}."
+                f"Available periods: {periods_preview or 'None discovered'}.{extra_hint}"
             )
         elif not discovered:
             status = "NO_FILINGS"
@@ -354,3 +375,40 @@ class SecEdgarConnector(BaseSourceConnector):
             coverage_status=status,
             warnings=warnings,
         )
+
+    async def acquire_filing(
+        self,
+        filing: DiscoveredFiling,
+        destination_dir: Path,
+        client: Optional[httpx.AsyncClient] = None,
+    ) -> Optional[Path]:
+        """Download primary filing document from SEC EDGAR archives to local disk."""
+        if not filing.document_url:
+            return None
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"{filing.accession_number}_{filing.primary_document}"
+        filename = re.sub(r"[^\w\.\-\_]", "_", filename)
+        target_path = destination_dir / filename
+
+        if target_path.exists() and target_path.stat().st_size > 0:
+            return target_path
+
+        headers = {
+            "User-Agent": self.user_agent,
+            "Accept-Encoding": "gzip, deflate",
+        }
+
+        try:
+            if client:
+                resp = await client.get(filing.document_url, headers=headers, timeout=self.timeout_sec)
+            else:
+                async with httpx.AsyncClient(timeout=self.timeout_sec, follow_redirects=True) as local_client:
+                    resp = await local_client.get(filing.document_url, headers=headers)
+
+            if resp.status_code == 200 and len(resp.content) > 0:
+                with open(target_path, "wb") as f:
+                    f.write(resp.content)
+                return target_path
+            return None
+        except Exception:
+            return None

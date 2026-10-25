@@ -33,14 +33,21 @@ class ResearchQualitySupervisor:
         """Inspect workflow health and determine whether to proceed, repair, escalate, or stop."""
         context = context or {}
 
-        # 1. Critical Check: Numerical Integrity Gate (BLOCK rule is absolute)
+        def _get_field(obj: Any, key: str, default: Any = None) -> Any:
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            return getattr(obj, key, default)
+
+        # 1. Critical Check: Any Judge BLOCK verdict is absolute
         for jv in judge_verdicts:
-            if jv.judge_role == "Numerical and Temporal Integrity" and jv.overall_verdict == "BLOCK":
+            if jv.overall_verdict == "BLOCK":
+                failed_cond = "NUMERICAL_INTEGRITY_VIOLATION" if jv.judge_role == "Numerical and Temporal Integrity" else "VERIFICATION_GATE_BLOCK"
                 return SupervisorDecision(
                     action="STOP",
-                    reason="Critical numerical violation: deterministic calculation failed (division by zero, incompatible unit/currency).",
-                    failed_condition="NUMERICAL_INTEGRITY_VIOLATION",
+                    reason=f"Verification gate BLOCKED by {jv.judge_role}: {jv.concise_explanation}",
+                    failed_condition=failed_cond,
                     remaining_retries=remaining_repairs,
+                    unresolved_uncertainties=[f"[{jv.judge_role}]: {jv.concise_explanation}"],
                 )
 
         # 2. Check for required follow-up retrieval from Evidence or Skeptic Judges
@@ -49,12 +56,12 @@ class ResearchQualitySupervisor:
             if jv.overall_verdict in ("RETRIEVE_MORE", "QUALIFY") and jv.required_followup_retrieval:
                 repair_queries.append(jv.required_followup_retrieval)
 
-        # Also inspect missing evidence reported by analysts
+        # Also inspect missing evidence reported by analysts (dictionary or model aware)
         for out in analyst_outputs:
-            if hasattr(out, "missing_evidence") and out.missing_evidence:
-                for gap in out.missing_evidence:
-                    if "TotalRevenue" in gap or "Prior period" in gap:
-                        repair_queries.append(f"financial table {gap}")
+            missing = _get_field(out, "missing_evidence", [])
+            if missing:
+                for gap in missing:
+                    repair_queries.append(f"financial table {gap}")
 
         # 3. Determine if repair retrieval is justified and budgeted
         if repair_queries and remaining_repairs > 0:
@@ -80,6 +87,16 @@ class ResearchQualitySupervisor:
                 remaining_retries=remaining_repairs - 1,
             )
 
+        # Check if analyst outputs are missing when not in repair or block
+        if not analyst_outputs and not judge_verdicts:
+            return SupervisorDecision(
+                action="STOP",
+                reason="No specialist analyst outputs or judge evaluations were produced.",
+                failed_condition="NO_ANALYST_OUTPUTS",
+                remaining_retries=0,
+                unresolved_uncertainties=["Specialist analysts failed to produce research findings."],
+            )
+
         # 4. Check if any judge flagged material uncertainties or contradictions
         unresolved: List[str] = []
         has_qualification = False
@@ -88,9 +105,18 @@ class ResearchQualitySupervisor:
                 has_qualification = True
                 unresolved.append(f"[{jv.judge_role}]: {jv.concise_explanation}")
 
+        # Also inspect degraded/failed completion status and missing evidence from analysts
         for out in analyst_outputs:
-            if hasattr(out, "completion_status") and out.completion_status == "DEGRADED":
-                unresolved.extend(out.warnings)
+            c_status = _get_field(out, "completion_status", "COMPLETE")
+            warnings = _get_field(out, "warnings", [])
+            missing = _get_field(out, "missing_evidence", [])
+            role = _get_field(out, "analyst_role", "Analyst")
+            if c_status in ("DEGRADED", "FAILED", "UNAVAILABLE"):
+                has_qualification = True
+                unresolved.extend(warnings or [f"{role} reported {c_status} completion status."])
+            if missing:
+                has_qualification = True
+                unresolved.extend([f"[{role}] Evidence gap: {m}" for m in missing])
 
         if has_qualification or unresolved:
             return SupervisorDecision(

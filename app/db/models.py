@@ -240,6 +240,18 @@ class FinancialFact(Base):
     company = relationship("Company", back_populates="facts")
     document = relationship("Document", back_populates="facts")
 
+    @property
+    def reporting_period(self) -> Optional[str]:
+        if self.table_reference and ":" in self.table_reference:
+            parts = self.table_reference.split(":", 1)
+            if parts[1].strip():
+                return parts[1].strip()
+        if self.period_end_date:
+            return f"FY{self.period_end_date.strftime('%y')}"
+        if self.document and self.document.reporting_period:
+            return self.document.reporting_period
+        return self.table_reference
+
     def __repr__(self) -> str:
         return f"<FinancialFact metric={self.metric_name} value={self.numeric_value} {self.currency}>"
 

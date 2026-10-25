@@ -35,9 +35,17 @@ def get_health(db: Session = Depends(get_db)):
     overall_status = "healthy" if database_connected else "degraded"
     status_code = status.HTTP_200_OK if database_connected else status.HTTP_503_SERVICE_UNAVAILABLE
 
+    qdrant_available = False
+    try:
+        from app.retrieval.service import retrieval_service
+        qdrant_available = retrieval_service.vector_store is not None
+    except Exception:
+        qdrant_available = settings.qdrant_path.exists()
+
     optional_components = {
         "llm_api_key_configured": bool(settings.llm_api_key and settings.llm_api_key != "your_api_key_here"),
         "upload_dir_ready": settings.upload_dir.exists(),
+        "qdrant_ready": qdrant_available,
         "qdrant_dir_ready": settings.qdrant_path.exists(),
     }
 

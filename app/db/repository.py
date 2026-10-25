@@ -449,7 +449,22 @@ class Repository:
         verification_status: str = "needs_human_review",
         verification_notes: Optional[str] = None,
     ) -> ResearchClaim:
-        """Persist a claim for multi-judge auditing and report generation."""
+        """Persist or update a claim for multi-judge auditing and report generation."""
+        existing = self.db.scalars(select(ResearchClaim).where(ResearchClaim.id == claim_id)).first()
+        if existing:
+            existing.run_id = run_id
+            existing.claim_text = claim_text
+            existing.claim_type = claim_type
+            existing.materiality = materiality
+            existing.calculation_id = calculation_id
+            existing.verification_status = verification_status
+            existing.verification_notes = verification_notes
+            existing.evidence_references = evidence_references or []
+            existing.fact_ids = fact_ids or []
+            self.db.commit()
+            self.db.refresh(existing)
+            return existing
+
         claim = ResearchClaim(
             id=claim_id,
             run_id=run_id,

@@ -30,6 +30,34 @@ class EvidenceCitationJudge:
         has_insufficient = False
         has_contradicted = False
 
+        if not claims:
+            return JudgeVerdict(
+                judge_role=self.role_name,
+                overall_verdict="BLOCK",
+                claim_evaluations=[],
+                concise_explanation="No candidate claims submitted for evidence audit. Evidence ledger is empty.",
+                required_followup_retrieval="Retrieve primary financial statements and disclosures.",
+            )
+
+        if not evidence_chunks:
+            evaluations = [
+                ClaimEvaluation(
+                    claim_id=claim.claim_id,
+                    status="insufficient_evidence",
+                    reason="No source evidence passages retrieved to ground this assertion.",
+                    suggested_correction="Attach primary filing passage citation.",
+                )
+                for claim in claims
+                if claim.claim_type != "calculated_metric"
+            ]
+            return JudgeVerdict(
+                judge_role=self.role_name,
+                overall_verdict="BLOCK",
+                claim_evaluations=evaluations,
+                concise_explanation="Zero source evidence passages available in corpus. Factual assertions cannot be verified.",
+                required_followup_retrieval="Retrieve primary financial disclosures for ungrounded claims.",
+            )
+
         for claim in claims:
             # Calculated claims are verified by Financial Integrity Judge
             if claim.claim_type == "calculated_metric":

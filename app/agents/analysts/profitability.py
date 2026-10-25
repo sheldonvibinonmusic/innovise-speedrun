@@ -73,8 +73,26 @@ class FinancialStatementsAnalyst:
                 )
             )
 
-        # Compute deterministic operating margin if facts present
-        if rev_facts and op_facts:
+        # Check for pre-computed canonical calculations first (AUD-07 consistency)
+        canonical_calcs = {c.get("metric_name"): c for c in context.get("calculations", [])}
+
+        if "OperatingMargin" in canonical_calcs:
+            c = canonical_calcs["OperatingMargin"]
+            if c.get("validation_outcome") == "VALID":
+                referenced_calcs.append(c["calculation_id"])
+                findings.append(f"Operating Margin computed deterministically: {c['formatted_result']}.")
+                claims.append(
+                    CandidateClaim(
+                        claim_id="clm_metric_op_margin",
+                        claim_text=f"Deterministic Operating Margin is {c['formatted_result']}.",
+                        claim_type="calculated_metric",
+                        materiality="HIGH",
+                        calculation_id=c["calculation_id"],
+                        fact_references=c.get("source_fact_ids", []),
+                        confidence=1.0,
+                    )
+                )
+        elif rev_facts and op_facts:
             latest_rev = rev_facts[0]
             latest_op = op_facts[0]
             op_calc = calculate_operating_margin(latest_op, latest_rev)
@@ -95,8 +113,23 @@ class FinancialStatementsAnalyst:
             else:
                 warnings.extend(op_calc.warnings)
 
-        # Compute deterministic net margin if facts present
-        if rev_facts and net_facts:
+        if "NetMargin" in canonical_calcs:
+            c = canonical_calcs["NetMargin"]
+            if c.get("validation_outcome") == "VALID":
+                referenced_calcs.append(c["calculation_id"])
+                findings.append(f"Net Profit Margin computed deterministically: {c['formatted_result']}.")
+                claims.append(
+                    CandidateClaim(
+                        claim_id="clm_metric_net_margin",
+                        claim_text=f"Deterministic Net Margin is {c['formatted_result']}.",
+                        claim_type="calculated_metric",
+                        materiality="HIGH",
+                        calculation_id=c["calculation_id"],
+                        fact_references=c.get("source_fact_ids", []),
+                        confidence=1.0,
+                    )
+                )
+        elif rev_facts and net_facts:
             latest_rev = rev_facts[0]
             latest_net = net_facts[0]
             net_calc = calculate_net_margin(latest_net, latest_rev)
@@ -116,6 +149,41 @@ class FinancialStatementsAnalyst:
                 )
             else:
                 warnings.extend(net_calc.warnings)
+
+        # Include additional canonical ratios if present (AUD-08)
+        if "CurrentRatio" in canonical_calcs:
+            c = canonical_calcs["CurrentRatio"]
+            if c.get("validation_outcome") == "VALID":
+                referenced_calcs.append(c["calculation_id"])
+                findings.append(f"Current Liquidity Ratio: {c['formatted_result']}.")
+                claims.append(
+                    CandidateClaim(
+                        claim_id="clm_metric_current_ratio",
+                        claim_text=f"Deterministic Current Ratio is {c['formatted_result']}.",
+                        claim_type="calculated_metric",
+                        materiality="HIGH",
+                        calculation_id=c["calculation_id"],
+                        fact_references=c.get("source_fact_ids", []),
+                        confidence=1.0,
+                    )
+                )
+
+        if "DebtToEquity" in canonical_calcs:
+            c = canonical_calcs["DebtToEquity"]
+            if c.get("validation_outcome") == "VALID":
+                referenced_calcs.append(c["calculation_id"])
+                findings.append(f"Debt-to-Equity Leverage: {c['formatted_result']}.")
+                claims.append(
+                    CandidateClaim(
+                        claim_id="clm_metric_debt_to_equity",
+                        claim_text=f"Deterministic Debt-to-Equity ratio is {c['formatted_result']}.",
+                        claim_type="calculated_metric",
+                        materiality="HIGH",
+                        calculation_id=c["calculation_id"],
+                        fact_references=c.get("source_fact_ids", []),
+                        confidence=1.0,
+                    )
+                )
 
         status = "COMPLETE" if claims else ("DEGRADED" if warnings else "UNAVAILABLE")
 

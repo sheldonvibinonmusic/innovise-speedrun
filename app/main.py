@@ -27,6 +27,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # 2. Deterministically initialize SQLite database tables
     init_db()
 
+    # 3. Prime in-memory BM25 and vector indices from persistent SQLite chunks
+    try:
+        from app.db.session import SessionLocal
+        from app.retrieval.service import retrieval_service
+        with SessionLocal() as db:
+            retrieval_service.rebuild_indices_from_db(db)
+    except Exception as exc:
+        import logging
+        logging.getLogger("app.main").warning("Index warmup during startup warning: %s", exc)
+
     yield
 
     # Clean shutdown tasks (if any) can be added here

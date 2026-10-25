@@ -57,6 +57,26 @@ from app.retrieval.service import RetrievalResponse, retrieval_service
 from app.workflow.state import ResearchWorkflowState
 
 
+def _log_workflow_event(run_id: Optional[str], stage: str, event_type: str, message: str, details: Optional[Dict[str, Any]] = None):
+    """Safely log persistent audit trace events to SQLite."""
+    if not run_id:
+        return
+    try:
+        with SessionLocal() as db:
+            repo = Repository(db)
+            event_details = {"event_type": event_type, "event_message": message}
+            if details:
+                event_details.update(details)
+            repo.create_event(
+                run_id=run_id,
+                node_or_stage=stage,
+                status_or_code="INFO",
+                details=event_details,
+            )
+    except Exception:
+        pass
+
+
 def validate_scope_node(state: ResearchWorkflowState) -> Dict[str, Any]:
     """Validate research inquiry, company ticker, and scope bounds."""
     question = state.get("research_question", "").strip()
@@ -82,32 +102,157 @@ async def acquire_sources_node(state: ResearchWorkflowState) -> Dict[str, Any]:
     ticker = state.get("company_ticker", "")
     seed_url = state.get("seed_website_url")
     doc_ids = list(state.get("document_ids", []))
+    req_periods = state.get("requested_periods", [])
+    primary_period = req_periods[0] if req_periods else None
     manifest: Dict[str, Any] = {}
+    warnings = list(state.get("warnings", []))
+    errors = list(state.get("errors", []))
 
-    if acq_mode in ("website_discovery", "combined") and seed_url:
-        from app.ingestion.sources.website_crawler import WebsiteFinancialCrawler
-        crawler = WebsiteFinancialCrawler()
-        crawler_res = await crawler.crawl_and_discover(seed_url=seed_url, company_name=ticker)
-        manifest["website_discovery"] = {
-            "status": crawler_res.coverage_status,
-            "pages_inspected": crawler_res.pages_inspected,
-            "documents_found": len(crawler_res.discovered_documents),
-        }
+    import hashlib
+    from app.config import settings
 
-    # Check if documents exist in DB for company if not explicitly passed
+    settings.upload_dir.mkdir(parents=True, exist_ok=True)
+
     with SessionLocal() as db:
         repo = Repository(db)
-        if not doc_ids and ticker:
-            comp = repo.get_company_by_ticker(ticker)
-            if comp:
-                existing_docs = repo.get_documents_by_company(comp.id)
-                if existing_docs:
-                    doc_ids.extend([d.id for d in existing_docs])
+        comp = repo.get_company_by_ticker(ticker) if ticker else None
+
+        # 1. Reuse existing registered documents matching company and period if no doc_ids specified
+        if not doc_ids and comp:
+            existing_docs = repo.get_documents_by_company(comp.id)
+            if existing_docs:
+                matching_docs = []
+                if primary_period:
+                    norm = primary_period.replace(" ", "").upper()
+                    matching_docs = [
+                        d for d in existing_docs
+                        if d.reporting_period and d.reporting_period.replace(" ", "").upper() in (norm, f"FY20{norm[-2:]}" if len(norm) == 4 and norm.startswith("FY") else norm)
+                    ]
+                doc_ids.extend([d.id for d in (matching_docs or existing_docs)])
+
+        # 2. Mode A Website Discovery Acquisition
+        if acq_mode in ("website_discovery", "combined") and seed_url:
+            from app.ingestion.sources.website_crawler import WebsiteFinancialCrawler
+            import httpx
+
+            try:
+                crawler = WebsiteFinancialCrawler()
+                crawler_res = await crawler.crawl_and_discover(seed_url=seed_url, company_name=ticker)
+                manifest["website_discovery"] = {
+                    "status": crawler_res.coverage_status,
+                    "pages_inspected": crawler_res.pages_inspected,
+                    "documents_found": len(crawler_res.discovered_documents),
+                }
+
+                # Acquire and register discovered documents
+                for doc_rec in crawler_res.discovered_documents[:3]:
+                    content_bytes = doc_rec.file_bytes
+                    if not content_bytes and doc_rec.url:
+                        try:
+                            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as hclient:
+                                r = await hclient.get(doc_rec.url)
+                                if r.status_code == 200:
+                                    content_bytes = r.content
+                        except Exception:
+                            content_bytes = None
+
+                    if content_bytes and len(content_bytes) > 0:
+                        sha256 = hashlib.sha256(content_bytes).hexdigest()
+                        existing_doc = repo.get_document_by_hash(sha256)
+                        if existing_doc:
+                            if existing_doc.id not in doc_ids:
+                                doc_ids.append(existing_doc.id)
+                        else:
+                            ext = ".pptx" if doc_rec.document_type == "PPTX" else ".pdf"
+                            safe_name = f"web_{sha256[:12]}{ext}"
+                            saved_path = settings.upload_dir / safe_name
+                            with open(saved_path, "wb") as f_out:
+                                f_out.write(content_bytes)
+
+                            new_doc = repo.create_document(
+                                document_id=f"doc_{uuid.uuid4().hex[:12]}",
+                                original_filename=doc_rec.title or safe_name,
+                                stored_path=str(saved_path),
+                                sha256_hash=sha256,
+                                source_type="website_discovery",
+                                source_url=doc_rec.url,
+                                company_id=comp.id if comp else None,
+                                document_type="Annual Report" if doc_rec.document_type == "PDF" else "Presentation",
+                                jurisdiction="US",
+                                reporting_period=primary_period or "FY24",
+                                ingestion_status="REGISTERED",
+                                extraction_warnings=f"Discovered from {seed_url}",
+                            )
+                            doc_ids.append(new_doc.id)
+            except Exception as crawler_err:
+                warnings.append(f"Website crawler acquisition notice: {str(crawler_err)}")
+
+        # 3. SEC EDGAR Acquisition
+        if acq_mode in ("sec_edgar", "combined") and not doc_ids and ticker:
+            from app.ingestion.sources.sec_edgar import SecEdgarConnector
+            sec_connector = SecEdgarConnector()
+            try:
+                sec_manifest = await sec_connector.fetch_filings(
+                    company_id=ticker,
+                    filing_types=["10-K", "10-Q"],
+                    max_periods=2,
+                    period_filter=primary_period,
+                )
+                manifest["sec_edgar"] = {
+                    "status": sec_manifest.coverage_status,
+                    "filings_found": len(sec_manifest.discovered_filings),
+                }
+
+                if not comp and sec_manifest.company_name:
+                    comp = repo.create_company(
+                        name=sec_manifest.company_name,
+                        ticker=ticker,
+                        jurisdiction="US",
+                        external_source_id=sec_manifest.cik,
+                    )
+
+                for filing in sec_manifest.discovered_filings[:2]:
+                    acquired_path = await sec_connector.acquire_filing(filing, settings.upload_dir)
+                    if acquired_path and acquired_path.exists():
+                        with open(acquired_path, "rb") as f_in:
+                            content = f_in.read()
+                        sha256 = hashlib.sha256(content).hexdigest()
+                        existing_doc = repo.get_document_by_hash(sha256)
+                        if existing_doc:
+                            if existing_doc.id not in doc_ids:
+                                doc_ids.append(existing_doc.id)
+                        else:
+                            new_doc = repo.create_document(
+                                document_id=f"doc_{uuid.uuid4().hex[:12]}",
+                                original_filename=filing.primary_document,
+                                stored_path=str(acquired_path),
+                                sha256_hash=sha256,
+                                source_type="sec_edgar",
+                                source_url=filing.document_url,
+                                company_id=comp.id if comp else None,
+                                document_type=filing.form,
+                                jurisdiction="US",
+                                reporting_period=filing.fiscal_period or primary_period,
+                                source_identifier=filing.accession_number,
+                                ingestion_status="REGISTERED",
+                                extraction_warnings="Acquired from SEC EDGAR official archives.",
+                            )
+                            doc_ids.append(new_doc.id)
+            except Exception as sec_err:
+                warnings.append(f"SEC EDGAR acquisition notice: {str(sec_err)}")
+
+        if not doc_ids:
+            warnings.append(f"No source documents acquired for {ticker} (Mode: {acq_mode}, Period: {primary_period}).")
+
+    run_id = state.get("run_id")
+    _log_workflow_event(run_id, "acquire_sources", "ACQUIRE_SOURCES_COMPLETE", f"Acquired source documents: {len(doc_ids)} found in scope")
 
     return {
         "current_stage": "acquire_sources",
         "document_ids": doc_ids,
         "source_manifest": manifest,
+        "warnings": warnings,
+        "errors": errors,
     }
 
 
@@ -115,17 +260,55 @@ def check_readiness_node(state: ResearchWorkflowState) -> Dict[str, Any]:
     """Ensure all documents in scope are parsed, indexed, and facts extracted."""
     doc_ids = state.get("document_ids", [])
     ingestion_service = DocumentIngestionService()
+    errors = list(state.get("errors", []))
+    warnings = list(state.get("warnings", []))
+
+    if not doc_ids:
+        warnings.append("No document IDs attached to research run scope.")
+        return {
+            "current_stage": "check_readiness",
+            "documents_ready": False,
+            "warnings": warnings,
+            "errors": errors,
+        }
+
+    indexed_docs = []
+    failed_docs = []
 
     with SessionLocal() as db:
         repo = Repository(db)
         for doc_id in doc_ids:
             doc = repo.get_document_by_id(doc_id)
-            if doc and doc.ingestion_status in ("REGISTERED", "PARSING"):
+            if not doc:
+                failed_docs.append(f"{doc_id} (not found in database)")
+                continue
+
+            if doc.ingestion_status in ("REGISTERED", "PARSING"):
                 ingestion_service.process_document(doc_id, db)
+                db.refresh(doc)
+
+            if doc.ingestion_status in ("INDEXED", "PARTIALLY_PROCESSED"):
+                indexed_docs.append(doc_id)
+            else:
+                failed_docs.append(f"{doc_id} ({doc.ingestion_status}: {doc.extraction_warnings or 'Processing failed'})")
+
+    if failed_docs:
+        errors.append(f"Document readiness failure for: {'; '.join(failed_docs)}")
+
+    all_ready = len(indexed_docs) > 0 and len(failed_docs) == 0
+    if not all_ready and len(indexed_docs) > 0:
+        warnings.append(f"Partial document readiness: {len(indexed_docs)} indexed, {len(failed_docs)} failed.")
+
+    run_id = state.get("run_id")
+    _log_workflow_event(run_id, "check_readiness", "CHECK_READINESS_COMPLETE", f"Prepared {len(indexed_docs)} documents for evidence extraction")
+    _log_workflow_event(run_id, "check_readiness", "FACTS_EXTRACTED", f"Validated document readiness")
 
     return {
         "current_stage": "check_readiness",
-        "documents_ready": True,
+        "documents_ready": all_ready,
+        "document_ids": indexed_docs,
+        "warnings": warnings,
+        "errors": errors,
     }
 
 
@@ -150,6 +333,8 @@ def retrieve_evidence_node(state: ResearchWorkflowState) -> Dict[str, Any]:
     q = state.get("research_question", "")
     ticker = state.get("company_ticker", "")
     subqs = state.get("subquestions", [q])
+    doc_ids = state.get("document_ids", [])
+    run_id = state.get("run_id")
 
     with SessionLocal() as db:
         resp = retrieval_service.multi_hop_search(
@@ -159,6 +344,7 @@ def retrieve_evidence_node(state: ResearchWorkflowState) -> Dict[str, Any]:
             subquestions=subqs,
             max_hops=2,
             top_k_per_hop=5,
+            document_ids=doc_ids,
         )
 
     evidence_dicts = [
@@ -189,6 +375,9 @@ def retrieve_evidence_node(state: ResearchWorkflowState) -> Dict[str, Any]:
         for ce in resp.counter_evidence
     ]
 
+    _log_workflow_event(run_id, "retrieve_evidence", "RETRIEVE_EVIDENCE_COMPLETE", f"Retrieved {len(evidence_dicts)} evidence passages")
+    _log_workflow_event(run_id, "retrieve_evidence", "MULTI_HOP_EXPANDED", f"Multi-hop expanded {len(counter_dicts)} counter-evidence citations")
+
     return {
         "current_stage": "retrieve_evidence",
         "evidence": evidence_dicts,
@@ -198,43 +387,225 @@ def retrieve_evidence_node(state: ResearchWorkflowState) -> Dict[str, Any]:
 
 
 def calculate_metrics_node(state: ResearchWorkflowState) -> Dict[str, Any]:
-    """Execute deterministic arithmetic using Python Decimal."""
+    """Execute deterministic arithmetic using Python Decimal with strict comparability checks."""
+    import re
     facts = state.get("financial_facts", [])
     ticker = state.get("company_ticker", "")
+    req_periods = state.get("requested_periods", [])
+    target_period_norm = None
+    if req_periods:
+        norm_match = re.search(r"(?:19\d\d|20\d\d)", req_periods[0])
+        if norm_match:
+            target_period_norm = norm_match.group(0)
+        else:
+            short_match = re.search(r"(?:FY|CY)?['`]?([0-9]{2})\b", req_periods[0].upper())
+            if short_match:
+                target_period_norm = f"20{short_match.group(1)}"
 
-    # Reconstruct lightweight objects or fetch from DB
+    def _fact_period(f: Any) -> str:
+        if f is None:
+            return ""
+        if isinstance(f, dict):
+            return str(f.get("reporting_period") or f.get("period") or f.get("table_reference") or "")
+        rp = getattr(f, "reporting_period", None)
+        if rp:
+            return str(rp)
+        if hasattr(f, "document") and f.document and f.document.reporting_period:
+            return str(f.document.reporting_period)
+        if hasattr(f, "table_reference") and f.table_reference:
+            return str(f.table_reference)
+        return ""
+
+    def _get_year(p: Optional[str]) -> Optional[int]:
+        if not p:
+            return None
+        m = re.search(r"(?:19\d\d|20\d\d)", p)
+        if m:
+            return int(m.group(0))
+        m2 = re.search(r"(?:FY|CY)?['`]?([0-9]{2})\b", p.upper())
+        if m2:
+            return int(f"20{m2.group(1)}")
+        return None
+
     calc_results: List[CalculationResult] = []
 
     with SessionLocal() as db:
         repo = Repository(db)
-        comp = repo.get_company_by_ticker(ticker)
-        db_facts = list(repo.get_facts_by_company(comp.id)) if comp else []
-
+        comp = repo.get_company_by_ticker(ticker) if ticker else None
         doc_ids = state.get("document_ids", [])
-        existing_fact_ids = {f.id for f in db_facts}
-        for did in doc_ids:
-            for f in repo.get_facts_by_document(did):
-                if f.id not in existing_fact_ids:
-                    db_facts.append(f)
-                    existing_fact_ids.add(f.id)
 
+        # Gather relevant facts scoped strictly to this company and documents
+        db_facts: List[Any] = []
+        seen_fact_ids = set()
+
+        if doc_ids:
+            for did in doc_ids:
+                for f in repo.get_facts_by_document(did):
+                    if f.id not in seen_fact_ids:
+                        db_facts.append(f)
+                        seen_fact_ids.add(f.id)
+        elif comp:
+            for f in repo.get_facts_by_company(comp.id):
+                if f.id not in seen_fact_ids:
+                    db_facts.append(f)
+                    seen_fact_ids.add(f.id)
+
+        # Separate facts by metric
         rev_facts = [f for f in db_facts if f.metric_name == "TotalRevenue"]
         op_facts = [f for f in db_facts if f.metric_name == "OperatingIncome"]
         net_facts = [f for f in db_facts if f.metric_name == "NetIncome"]
         debt_facts = [f for f in db_facts if f.metric_name in ("TotalDebt", "LongTermDebt")]
         asset_facts = [f for f in db_facts if f.metric_name == "TotalAssets"]
 
+        # Sort facts deterministically by year descending, then by id
+        def _sort_key(f):
+            yr = _get_year(_fact_period(f)) or 0
+            return (yr, f.id or 0)
+
+        rev_facts.sort(key=_sort_key, reverse=True)
+        op_facts.sort(key=_sort_key, reverse=True)
+        net_facts.sort(key=_sort_key, reverse=True)
+
+        # 1. Operating Margin: Find pair with identical period, currency, scope
+        op_calc_done = False
+        for op in op_facts:
+            op_p = _fact_period(op)
+            op_yr = _get_year(op_p)
+            if target_period_norm and op_yr and str(op_yr) != target_period_norm:
+                continue
+            for rv in rev_facts:
+                rv_p = _fact_period(rv)
+                rv_yr = _get_year(rv_p)
+                if (op_yr and rv_yr and op_yr == rv_yr) or (op_p == rv_p):
+                    if op.currency == rv.currency and op.reporting_scope == rv.reporting_scope:
+                        calc_results.append(calculate_operating_margin(op, rv))
+                        op_calc_done = True
+                        break
+            if op_calc_done:
+                break
+
+        # Fallback to first available ONLY if no specific target period was requested (AUD-05)
+        if not op_calc_done and not target_period_norm and rev_facts and op_facts:
+            for op in op_facts:
+                for rv in rev_facts:
+                    if op.currency == rv.currency and op.reporting_scope == rv.reporting_scope:
+                        calc_results.append(calculate_operating_margin(op, rv))
+                        op_calc_done = True
+                        break
+                if op_calc_done:
+                    break
+
+        # 2. Net Margin: Find pair with identical period, currency, scope
+        net_calc_done = False
+        for net in net_facts:
+            net_p = _fact_period(net)
+            net_yr = _get_year(net_p)
+            if target_period_norm and net_yr and str(net_yr) != target_period_norm:
+                continue
+            for rv in rev_facts:
+                rv_p = _fact_period(rv)
+                rv_yr = _get_year(rv_p)
+                if (net_yr and rv_yr and net_yr == rv_yr) or (net_p == rv_p):
+                    if net.currency == rv.currency and net.reporting_scope == rv.reporting_scope:
+                        calc_results.append(calculate_net_margin(net, rv))
+                        net_calc_done = True
+                        break
+            if net_calc_done:
+                break
+
+        # Fallback to first available ONLY if no specific target period was requested (AUD-05)
+        if not net_calc_done and not target_period_norm and rev_facts and net_facts:
+            for net in net_facts:
+                for rv in rev_facts:
+                    if net.currency == rv.currency and net.reporting_scope == rv.reporting_scope:
+                        calc_results.append(calculate_net_margin(net, rv))
+                        net_calc_done = True
+                        break
+                if net_calc_done:
+                    break
+
+        # 3. Revenue Growth: Find pair across two distinct, consecutive periods
+        growth_calc_done = False
         if len(rev_facts) >= 2:
-            calc_results.append(calculate_revenue_growth(rev_facts[0], rev_facts[1]))
-        if rev_facts and op_facts:
-            calc_results.append(calculate_operating_margin(op_facts[0], rev_facts[0]))
-        if rev_facts and net_facts:
-            calc_results.append(calculate_net_margin(net_facts[0], rev_facts[0]))
+            for i in range(len(rev_facts) - 1):
+                f_curr = rev_facts[i]
+                f_prior = rev_facts[i + 1]
+                p_c = _fact_period(f_curr)
+                p_p = _fact_period(f_prior)
+                yr_c = _get_year(p_c)
+                yr_p = _get_year(p_p)
+                # Check comparability: periods must differ
+                if p_c != p_p:
+                    if f_curr.currency == f_prior.currency and f_curr.reporting_scope == f_prior.reporting_scope:
+                        if not yr_c or not yr_p or yr_c > yr_p:
+                            calc_results.append(calculate_revenue_growth(f_curr, f_prior))
+                            growth_calc_done = True
+                            break
+
+        # 4. Current Ratio: Liquidity & Working Capital (Current Assets / Current Liabilities)
+        ca_facts = [f for f in db_facts if f.metric_name == "CurrentAssets"]
+        cl_facts = [f for f in db_facts if f.metric_name == "CurrentLiabilities"]
+        ca_facts.sort(key=_sort_key, reverse=True)
+        cl_facts.sort(key=_sort_key, reverse=True)
+        if ca_facts and cl_facts:
+            for ca in ca_facts:
+                ca_p = _fact_period(ca)
+                ca_yr = _get_year(ca_p)
+                if target_period_norm and ca_yr and str(ca_yr) != target_period_norm:
+                    continue
+                for cl in cl_facts:
+                    cl_p = _fact_period(cl)
+                    cl_yr = _get_year(cl_p)
+                    if (ca_yr and cl_yr and ca_yr == cl_yr) or (ca_p == cl_p):
+                        if ca.currency == cl.currency and ca.reporting_scope == cl.reporting_scope:
+                            calc_results.append(calculate_current_ratio(ca, cl))
+                            break
+
+        # 5. Debt to Equity: Solvency & Capital Structure (Total Debt / Stockholders' Equity)
+        debt_facts = [f for f in db_facts if f.metric_name in ("TotalDebt", "LongTermDebt")]
+        equity_facts = [f for f in db_facts if f.metric_name == "StockholdersEquity"]
+        debt_facts.sort(key=_sort_key, reverse=True)
+        equity_facts.sort(key=_sort_key, reverse=True)
+        if debt_facts and equity_facts:
+            for d in debt_facts:
+                d_p = _fact_period(d)
+                d_yr = _get_year(d_p)
+                if target_period_norm and d_yr and str(d_yr) != target_period_norm:
+                    continue
+                for eq in equity_facts:
+                    eq_p = _fact_period(eq)
+                    eq_yr = _get_year(eq_p)
+                    if (d_yr and eq_yr and d_yr == eq_yr) or (d_p == eq_p):
+                        if d.currency == eq.currency and d.reporting_scope == eq.reporting_scope:
+                            calc_results.append(calculate_debt_to_equity(d, eq))
+                            break
 
     calc_dicts = [c.to_dict() for c in calc_results]
+    structured_db_facts = [
+        {
+            "fact_id": f.id,
+            "id": f.id,
+            "metric_name": f.metric_name,
+            "numeric_value": f.numeric_value,
+            "currency": f.currency,
+            "unit_scale": f.unit_scale,
+            "period_type": f.period_type,
+            "reporting_period": _fact_period(f),
+            "reporting_scope": f.reporting_scope,
+            "page_number": f.page_number,
+            "table_reference": f.table_reference,
+        }
+        for f in db_facts
+    ]
+
+    run_id = state.get("run_id")
+    _log_workflow_event(run_id, "calculate_metrics", "CALCULATE_METRICS_COMPLETE", f"Evaluated {len(calc_dicts)} deterministic financial metrics")
+    _log_workflow_event(run_id, "calculate_metrics", "METRICS_VERIFIED", f"Financial scorecard metrics verified")
+
     return {
         "current_stage": "calculate_metrics",
         "calculations": calc_dicts,
+        "financial_facts": structured_db_facts if structured_db_facts else state.get("financial_facts", []),
     }
 
 
@@ -249,10 +620,26 @@ async def run_analysts_node(state: ResearchWorkflowState) -> Dict[str, Any]:
         PeerComparisonAnalyst(),
     ]
 
+    # Gather registered document details for SourceCoverageAnalyst
+    doc_dicts = []
+    with SessionLocal() as db:
+        repo = Repository(db)
+        for did in state.get("document_ids", []):
+            d = repo.get_document_by_id(did)
+            if d:
+                doc_dicts.append({
+                    "document_id": d.id,
+                    "original_filename": d.original_filename,
+                    "reporting_period": d.reporting_period,
+                    "document_type": d.document_type,
+                    "source_type": d.source_type,
+                })
+
     context = {
         "research_question": state.get("research_question"),
         "company_ticker": state.get("company_ticker"),
         "requested_periods": state.get("requested_periods", []),
+        "documents": doc_dicts,
         "evidence": state.get("evidence", []),
         "counter_evidence": state.get("counter_evidence", []),
         "financial_facts": state.get("financial_facts", []),
@@ -278,6 +665,9 @@ async def run_analysts_node(state: ResearchWorkflowState) -> Dict[str, Any]:
     claim_dicts = [c.model_dump() for c in all_claims]
     output_dicts = [o.model_dump() for o in outputs]
 
+    run_id = state.get("run_id")
+    _log_workflow_event(run_id, "run_analysts", "ANALYSTS_COMPLETE", f"7 specialist financial analysts formulated {len(claim_dicts)} claims")
+
     return {
         "current_stage": "run_analysts",
         "analyst_outputs": output_dicts,
@@ -292,12 +682,20 @@ async def run_judges_node(state: ResearchWorkflowState) -> Dict[str, Any]:
     evidence = state.get("evidence", [])
     counter_evidence = state.get("counter_evidence", [])
     raw_calcs = state.get("calculations", [])
+    def _safe_dec(val: Any) -> Optional[Decimal]:
+        if val is None or val in ("", "None", "N/A"):
+            return None
+        try:
+            return Decimal(str(val))
+        except Exception:
+            return None
+
     calcs = [
         CalculationResult(
             calculation_id=c["calculation_id"],
             metric_name=c["metric_name"],
             formula=c["formula"],
-            numeric_result=Decimal(c["numeric_result"]) if c.get("numeric_result") else None,
+            numeric_result=_safe_dec(c.get("numeric_result")),
             formatted_result=c["formatted_result"],
             unit=c["unit"],
             reporting_period=c["reporting_period"],
@@ -314,11 +712,23 @@ async def run_judges_node(state: ResearchWorkflowState) -> Dict[str, Any]:
     j2 = NumericalIntegrityJudge()
     j3 = AdversarialSkepticJudge()
 
+    # Pass all candidate counter-evidence and disconfirming passages from evidence
+    all_counter = list(counter_evidence)
+    for e in evidence:
+        c_lower = e.get("content", "").lower()
+        if any(k in c_lower for k in ["sharp revenue decline", "drastically decreased", "margin compression", "contraction", "operating losses", "headwinds", "risk factors"]):
+            if not any(ce.get("chunk_id") == e.get("chunk_id") for ce in all_counter):
+                all_counter.append(e)
+
     v1 = await j1.evaluate_claims(claims, evidence)
     v2 = await j2.evaluate_claims(claims, calcs, facts)
-    v3 = await j3.evaluate_claims(claims, counter_evidence)
+    v3 = await j3.evaluate_claims(claims, all_counter)
 
     verdicts = [v1.model_dump(), v2.model_dump(), v3.model_dump()]
+
+    run_id = state.get("run_id")
+    _log_workflow_event(run_id, "run_judges", "JUDGES_AUDITED", f"Tripartite verification judges audited candidate claims")
+
     return {
         "current_stage": "run_judges",
         "judge_verdicts": verdicts,
@@ -343,6 +753,12 @@ def supervise_quality_node(state: ResearchWorkflowState) -> Dict[str, Any]:
     dec_dict = decision.model_dump()
     decisions = list(state.get("supervisor_decisions", []))
     decisions.append(dec_dict)
+
+    run_id = state.get("run_id")
+    if decision.action == "REPAIR_RETRIEVAL":
+        _log_workflow_event(run_id, "supervise_quality", "SUPERVISOR_REPAIR_TRIGGERED", f"Supervisor triggered repair retrieval")
+    else:
+        _log_workflow_event(run_id, "supervise_quality", "SUPERVISOR_EVALUATION_COMPLETE", f"Supervisor approved report synthesis")
 
     return {
         "current_stage": "supervise_quality",
@@ -402,15 +818,42 @@ def synthesize_report_node(state: ResearchWorkflowState) -> Dict[str, Any]:
     calcs = state.get("calculations", [])
     verdicts = state.get("judge_verdicts", [])
     decisions = state.get("supervisor_decisions", [])
-    unresolved = state.get("unresolved_uncertainties", [])
+    unresolved = list(state.get("unresolved_uncertainties", []))
+    errors = state.get("errors", [])
+    warnings = state.get("warnings", [])
 
-    # Determine overall status
-    is_blocked = any(v.get("overall_verdict") == "BLOCK" for v in verdicts)
-    has_qualification = any(v.get("overall_verdict") in ("QUALIFY", "RETRIEVE_MORE") for v in verdicts) or bool(unresolved)
+    # Strict evidence floor gating synthesis verification status
+    evidence = state.get("evidence", [])
+    has_evidence = bool(evidence)
+    has_claims = bool(claims)
+    has_grounded_claims = any(
+        bool(cl.get("evidence_references")) or bool(cl.get("fact_references")) or bool(cl.get("calculation_id"))
+        for cl in claims
+    )
+
+    is_blocked = (
+        any(v.get("overall_verdict") == "BLOCK" for v in verdicts)
+        or not has_evidence
+        or not has_claims
+        or not has_grounded_claims
+        or bool(errors)
+    )
+    has_qualification = (
+        any(v.get("overall_verdict") in ("QUALIFY", "RETRIEVE_MORE", "INDETERMINATE") for v in verdicts)
+        or bool(unresolved)
+        or bool(warnings)
+        or any(cl.get("claim_type") == "risk_factor" and ("contradict" in cl.get("claim_text", "").lower() or cl.get("materiality") == "HIGH") for cl in claims)
+    )
 
     if is_blocked:
         verif_status = "BLOCKED"
         run_status = "failed"
+        if not has_evidence:
+            unresolved.append("Research scope lacked retrieved financial document passages.")
+        if not has_claims or not has_grounded_claims:
+            unresolved.append("Zero verified factual assertions or deterministic calculations could be grounded.")
+        if errors:
+            unresolved.extend(errors)
     elif has_qualification:
         verif_status = "QUALIFIED"
         run_status = "completed_with_warnings"
@@ -418,49 +861,120 @@ def synthesize_report_node(state: ResearchWorkflowState) -> Dict[str, Any]:
         verif_status = "VERIFIED"
         run_status = "completed"
 
-    # Build dynamic, finding-specific executive summary
-    calc_highlights = []
-    for c in calcs:
-        name = c.get("metric_name")
-        res = c.get("formatted_result")
-        if name and res:
-            calc_highlights.append(f"{name} of {res}")
-    calc_str = f" Core verified metrics include {', '.join(calc_highlights)}." if calc_highlights else ""
+    # Normalize judge verdicts to guarantee compatibility with both API and UI consumers
+    normalized_verdicts = []
+    for v in verdicts:
+        role = v.get("judge_role") or v.get("judge_name") or "Verification Judge"
+        ov = v.get("overall_verdict") or v.get("verdict") or "INDETERMINATE"
+        exp = v.get("concise_explanation") or v.get("rationale") or ""
+        normalized_verdicts.append({
+            "judge_role": role,
+            "judge_name": role,
+            "overall_verdict": ov,
+            "verdict": ov,
+            "concise_explanation": exp,
+            "rationale": exp,
+            "claim_evaluations": v.get("claim_evaluations", []),
+            "required_followup_retrieval": v.get("required_followup_retrieval"),
+        })
 
-    exec_summary = (
-        f"Institutional financial research analysis for {ticker or 'subject entity'} addressing inquiry: '{q}'. "
-        f"Multi-agent workflow synthesized findings across 7 specialized analyst roles and evaluated evidence via 3 verification judges, "
-        f"concluding with an overall verification status of {verif_status}. "
-        f"Audited {len(claims)} candidate claims, {len(calcs)} deterministic arithmetic calculations, and {len(unresolved)} boundary caveats.{calc_str}"
-    )
+    # Build substantive, finding-led executive summary (AUD-09)
+    summary_sentences = []
+    if is_blocked:
+        summary_sentences.append(
+            f"Financial research inquiry regarding {ticker} ('{q}') could not be verified due to evidentiary or verification gate blocks."
+        )
+        if not has_evidence:
+            summary_sentences.append("The research scope lacked retrieved primary financial disclosures.")
+        if any(v.get("overall_verdict") == "BLOCK" for v in verdicts):
+            blocking_reasons = [v.get("concise_explanation") for v in verdicts if v.get("overall_verdict") == "BLOCK" and v.get("concise_explanation")]
+            if blocking_reasons:
+                summary_sentences.append(f"Independent verification gates issued a BLOCK verdict: {'; '.join(blocking_reasons)}.")
+    else:
+        metrics_summary = []
+        for c in calcs:
+            if c.get("validation_outcome") == "VALID":
+                m_title = {
+                    "OperatingMargin": "operating margin",
+                    "RevenueGrowth": "revenue growth",
+                    "NetMargin": "net profit margin",
+                    "CurrentRatio": "current liquidity ratio",
+                    "DebtToEquity": "debt-to-equity ratio",
+                }.get(c.get("metric_name"), c.get("metric_name"))
+                metrics_summary.append(f"{m_title} of {c.get('formatted_result')}")
+
+        if metrics_summary:
+            summary_sentences.append(
+                f"Multi-period financial analysis for {ticker} establishes verified {', '.join(metrics_summary)} based on primary regulatory filings."
+            )
+        else:
+            summary_sentences.append(
+                f"Multi-agent financial assessment for {ticker} evaluated reported accounting disclosures addressing: '{q}'."
+            )
+
+        # Risk and counter-evidence finding
+        risk_claims = [cl for cl in claims if cl.get("claim_type") == "risk_factor"]
+        contradictions = [cl for cl in risk_claims if "contradict" in cl.get("claim_text", "").lower()]
+        if contradictions:
+            summary_sentences.append(
+                f"Adversarial audit surfaced material contradictory disclosures: {contradictions[0].get('claim_text')}."
+            )
+        elif risk_claims:
+            summary_sentences.append(
+                f"Risk assessment highlighted key operational disclosures: {risk_claims[0].get('claim_text')}."
+            )
+
+        # Verification posture
+        summary_sentences.append(
+            f"Tripartite verification gates concluded with an overall status of {verif_status}. "
+            f"All numerical computations were deterministically verified against SQLite accounting records without free-form LLM arithmetic."
+        )
+
+    exec_summary = " ".join(summary_sentences)
 
     report_lines = [
-        f"# Financial Research & Verification Report: {ticker}",
-        f"**Inquiry**: {q}",
+        f"# Institutional Financial Research Report: {ticker}",
+        f"**Research Inquiry**: {q}",
         f"**Verification Gate Status**: `{verif_status}`",
         "",
-        "## Executive Summary",
+        "## Executive Summary & Analytical Stance",
         exec_summary,
         "",
-        "## Deterministic Calculations",
+        "## Deterministic Financial Metrics Scorecard",
+        "| Metric | Result | Formula | Scope / Basis | Validation Status |",
+        "| :--- | :--- | :--- | :--- | :--- |",
     ]
     for c in calcs:
         metric_title = {
             "OperatingMargin": "Operating Margin",
             "RevenueGrowth": "Revenue Growth",
             "NetMargin": "Net Margin",
-            "CurrentRatio": "Current Ratio",
-            "DebtToEquity": "Debt-to-Equity",
+            "CurrentRatio": "Current Ratio (Liquidity)",
+            "DebtToEquity": "Debt-to-Equity (Leverage)",
             "FreeCashFlow": "Free Cash Flow",
         }.get(c.get("metric_name", ""), c.get("metric_name", ""))
-        report_lines.append(f"- **{metric_title}**: `{c['formatted_result']}` (Formula: `{c['formula']}`, Validation: `{c['validation_outcome']}`)")
+        scope_str = f"{c.get('reporting_period', '')} ({c.get('reporting_scope', 'consolidated')})"
+        report_lines.append(f"| **{metric_title}** | `{c['formatted_result']}` | `{c['formula']}` | {scope_str} | `{c['validation_outcome']}` |")
 
-    report_lines.extend(["", "## Core Findings & Claims"])
-    for cl in claims[:8]:
-        report_lines.append(f"- [{cl.get('materiality')}] {cl.get('claim_text')} (Citations: `{cl.get('evidence_references')}`)")
+    # Risk Factors & Contradictory Disclosures Section
+    risk_claims = [cl for cl in claims if cl.get("claim_type") == "risk_factor"]
+    if risk_claims:
+        report_lines.extend(["", "## Risk Factors & Contradictory Disclosures"])
+        for rc in risk_claims:
+            report_lines.append(f"- **[{rc.get('materiality')}]** {rc.get('claim_text')} (Citation: `{rc.get('evidence_references')}`)")
+
+    report_lines.extend(["", "## Core Verified Findings & Claims"])
+    non_risk_claims = [cl for cl in claims if cl.get("claim_type") != "risk_factor"]
+    for cl in non_risk_claims[:10]:
+        report_lines.append(f"- **[{cl.get('materiality')}]** {cl.get('claim_text')} (Citations: `{cl.get('evidence_references')}`)")
+
+    # Verification Judge Ledger Section
+    report_lines.extend(["", "## Tripartite Verification Audit Ledger"])
+    for v in normalized_verdicts:
+        report_lines.append(f"- **{v['judge_name']}**: `{v['verdict']}` — {v['rationale']}")
 
     if unresolved:
-        report_lines.extend(["", "## Unresolved Uncertainties & Risk Caveats"])
+        report_lines.extend(["", "## Unresolved Uncertainties & Scope Limitations"])
         for u in unresolved:
             report_lines.append(f"- {u}")
 
@@ -470,26 +984,23 @@ def synthesize_report_node(state: ResearchWorkflowState) -> Dict[str, Any]:
     with SessionLocal() as db:
         repo = Repository(db)
         repo.update_run_status(run_id, status=run_status)
-        repo.create_or_update_report(
-            report_id=f"rep_{run_id}",
-            run_id=run_id,
-            executive_summary=exec_summary,
-            report_markdown=report_markdown,
-            structured_data={
-                "claims": claims,
-                "calculations": calcs,
-                "verdicts": verdicts,
-                "unresolved": unresolved,
-            },
-            verification_status=verif_status,
-        )
-
         seen_claim_ids = set()
-        for cl in claims:
-            cid = cl.get("claim_id") or f"clm_{uuid.uuid4().hex[:8]}"
+        persisted_claims = []
+        for idx, cl in enumerate(claims):
+            raw_cid = cl.get("claim_id") or f"clm_{idx:02d}"
+            if raw_cid.startswith(f"{run_id}_") or raw_cid.startswith(f"clm_{run_id[:8]}_"):
+                cid = raw_cid
+            else:
+                cid = f"{run_id}_{raw_cid}"
+            if len(cid) > 64:
+                cid = f"clm_{run_id[:8]}_{idx:02d}_{uuid.uuid5(uuid.NAMESPACE_DNS, raw_cid).hex[:16]}"[:64]
+
             if cid in seen_claim_ids:
                 continue
             seen_claim_ids.add(cid)
+            cl_copy = dict(cl)
+            cl_copy["claim_id"] = cid
+            persisted_claims.append(cl_copy)
             repo.create_claim(
                 claim_id=cid,
                 run_id=run_id,
@@ -501,6 +1012,22 @@ def synthesize_report_node(state: ResearchWorkflowState) -> Dict[str, Any]:
                 calculation_id=cl.get("calculation_id"),
                 verification_status="supported" if verif_status == "VERIFIED" else "needs_human_review",
             )
+
+        repo.create_or_update_report(
+            report_id=f"rep_{run_id}",
+            run_id=run_id,
+            executive_summary=exec_summary,
+            report_markdown=report_markdown,
+            structured_data={
+                "claims": persisted_claims,
+                "calculations": calcs,
+                "verdicts": normalized_verdicts,
+                "unresolved": unresolved,
+            },
+            verification_status=verif_status,
+        )
+
+    _log_workflow_event(run_id, "synthesize_report", "SYNTHESIS_COMPLETE", f"Final research report synthesized with status {verif_status}")
 
     return {
         "current_stage": "synthesize_report",

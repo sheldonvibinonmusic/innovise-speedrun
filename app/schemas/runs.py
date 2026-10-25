@@ -21,6 +21,8 @@ class AuditEventResponse(BaseModel):
     duration_ms: Optional[int] = Field(default=None, description="Stage execution duration in milliseconds")
     details: Dict[str, Any] = Field(default_factory=dict, description="Metadata payload")
     model_or_parser_version: Optional[str] = Field(default=None, description="Model/parser version involved")
+    event_type: Optional[str] = Field(default=None, description="Granular event classification code")
+    event_message: Optional[str] = Field(default=None, description="Human-readable audit message")
 
 
 class RunResponse(BaseModel):

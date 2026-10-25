@@ -39,7 +39,31 @@ class HistoricalTrendsAnalyst:
         warnings: List[str] = []
         missing_evidence: List[str] = []
 
-        if len(rev_facts) >= 2:
+        # Check for pre-computed canonical RevenueGrowth first (AUD-07)
+        canonical_calcs = {c.get("metric_name"): c for c in context.get("calculations", [])}
+
+        if "RevenueGrowth" in canonical_calcs:
+            growth_calc = canonical_calcs["RevenueGrowth"]
+            if growth_calc.get("validation_outcome") == "VALID":
+                cid = growth_calc["calculation_id"]
+                res_str = growth_calc["formatted_result"]
+                p_desc = growth_calc.get("reporting_period", "")
+                src_ids = growth_calc.get("source_fact_ids", [])
+                referenced_calcs.append(cid)
+                referenced_facts.extend(src_ids)
+                findings.append(f"Revenue growth for {company_ticker} was {res_str} ({p_desc}).")
+                claims.append(
+                    CandidateClaim(
+                        claim_id="clm_trend_rev_growth",
+                        claim_text=f"Total Revenue changed by {res_str} across comparable periods ({p_desc}).",
+                        claim_type="calculated_metric",
+                        materiality="HIGH",
+                        calculation_id=cid,
+                        fact_references=src_ids,
+                        confidence=1.0,
+                    )
+                )
+        elif len(rev_facts) >= 2:
             fact_cur = rev_facts[0]
             fact_prior = rev_facts[1]
             growth_calc = calculate_revenue_growth(fact_cur, fact_prior)

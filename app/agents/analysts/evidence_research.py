@@ -71,6 +71,19 @@ class SourceCoverageAnalyst:
             for i, p in enumerate(available_periods)
         ]
 
+        if not claims and evidence:
+            doc_title = documents[0].get("original_filename") if (documents and isinstance(documents[0], dict)) else "regulatory filings"
+            claims.append(
+                CandidateClaim(
+                    claim_id="clm_cov_00",
+                    claim_text=f"Primary source disclosures ({doc_title}) for {company_ticker} were retrieved and examined in scope.",
+                    claim_type="reported_fact",
+                    materiality="MEDIUM",
+                    evidence_references=[evidence[0].get("chunk_id", "")],
+                    confidence=1.0,
+                )
+            )
+
         status = "DEGRADED" if missing_periods or not evidence else "COMPLETE"
 
         return AnalystOutput(

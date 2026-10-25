@@ -155,6 +155,13 @@ class RetrievalService:
         """Execute full hybrid retrieval pipeline."""
         warning = None
 
+        # Ensure indices are built if chunks exist in database
+        if db and (self.bm25_index.bm25 is None or len(self.bm25_index.chunk_ids) == 0):
+            try:
+                self.rebuild_indices_from_db(db)
+            except Exception:
+                pass
+
         # 1. Dense vector search
         query_vec = self.embedding_service.embed_query(query)
         dense_hits = self.vector_store.search(
@@ -200,6 +207,36 @@ class RetrievalService:
             )
             for c in reranked
         ]
+
+        # 4B. Direct SQLite fallback if dense and sparse returned no candidates
+        if len(evidence_records) == 0 and db:
+            from app.db.models import DocumentChunk
+            query_obj = db.query(DocumentChunk)
+            if document_id:
+                query_obj = query_obj.filter(DocumentChunk.document_id == document_id)
+            elif company_ticker:
+                from app.db.models import Company, Document
+                comp = db.query(Company).filter(Company.ticker == company_ticker.upper()).first()
+                if comp:
+                    doc_ids_comp = [d.id for d in db.query(Document).filter(Document.company_id == comp.id).all()]
+                    if doc_ids_comp:
+                        query_obj = query_obj.filter(DocumentChunk.document_id.in_(doc_ids_comp))
+            fallback_chunks = query_obj.limit(top_k).all()
+            for chk in fallback_chunks:
+                evidence_records.append(
+                    EvidenceRecord(
+                        chunk_id=chk.id,
+                        document_id=chk.document_id,
+                        page_number=chk.page_number,
+                        chunk_type=chk.chunk_type,
+                        section_title=chk.section_title,
+                        content=chk.content,
+                        company_ticker=company_ticker,
+                        reporting_period=reporting_period,
+                        score=0.5,
+                        retrieval_routes=["sqlite_direct_fallback"],
+                    )
+                )
 
         # 5. Authoritative Structured Facts Lookup
         facts: List[Dict[str, Any]] = []
@@ -273,6 +310,7 @@ class RetrievalService:
         subquestions: Optional[List[str]] = None,
         max_hops: int = 2,
         top_k_per_hop: int = 5,
+        document_ids: Optional[List[str]] = None,
     ) -> RetrievalResponse:
         """Execute bounded multi-hop retrieval with evidence graph traversal."""
         from app.db.repository import Repository
@@ -293,11 +331,13 @@ class RetrievalService:
         warnings: List[str] = []
 
         # 2. Hop 1: Parallel subquestion hybrid search
+        doc_id_filter = document_ids[0] if (document_ids and len(document_ids) == 1) else None
         for sq in subquestions:
             resp = self.search(
                 query=sq,
                 db=db,
                 company_ticker=company_ticker,
+                document_id=doc_id_filter,
                 top_k=top_k_per_hop,
                 include_structured_facts=True,
                 include_counter_evidence=True,
@@ -347,6 +387,35 @@ class RetrievalService:
                         reporting_period=rel.reporting_period,
                         score=float(rel.confidence_score),
                         retrieval_routes=["evidence_graph_traversal"],
+                    )
+
+        # 4. Direct SQLite Fallback if aggregated evidence is still empty
+        if len(aggregated_evidence) == 0 and db:
+            from app.db.models import DocumentChunk
+            q_chunks = db.query(DocumentChunk)
+            if document_ids:
+                q_chunks = q_chunks.filter(DocumentChunk.document_id.in_(document_ids))
+            elif company_ticker:
+                from app.db.models import Company, Document
+                comp = db.query(Company).filter(Company.ticker == company_ticker.upper()).first()
+                if comp:
+                    doc_ids_comp = [d.id for d in db.query(Document).filter(Document.company_id == comp.id).all()]
+                    if doc_ids_comp:
+                        q_chunks = q_chunks.filter(DocumentChunk.document_id.in_(doc_ids_comp))
+            fallback_rows = q_chunks.limit(10).all()
+            for chk in fallback_rows:
+                if chk.id not in aggregated_evidence:
+                    aggregated_evidence[chk.id] = EvidenceRecord(
+                        chunk_id=chk.id,
+                        document_id=chk.document_id,
+                        page_number=chk.page_number,
+                        chunk_type=chk.chunk_type,
+                        section_title=chk.section_title,
+                        content=chk.content,
+                        company_ticker=company_ticker,
+                        reporting_period=None,
+                        score=0.5,
+                        retrieval_routes=["sqlite_direct_fallback"],
                     )
 
         combined_evidence = list(aggregated_evidence.values())

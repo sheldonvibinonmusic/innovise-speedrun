@@ -16,6 +16,8 @@ class RunStatus(str, Enum):
     COMPLETED_WITH_WARNINGS = "completed_with_warnings"
     FAILED = "failed"
     NEEDS_REVIEW = "needs_review"
+    APPROVED = "approved"
+    REJECTED = "rejected"
 
 
 class GateStatus(str, Enum):

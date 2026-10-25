@@ -32,6 +32,14 @@ class AdversarialSkepticJudge:
 
         counter_texts = [c.get("content", "").lower() for c in counter_evidence]
 
+        if not claims:
+            return JudgeVerdict(
+                judge_role=self.role_name,
+                overall_verdict="BLOCK",
+                claim_evaluations=[],
+                concise_explanation="No candidate claims were submitted for counter-evidence and completeness review.",
+            )
+
         for claim in claims:
             claim_lower = claim.claim_text.lower()
             # If claim asserts strong growth or profit

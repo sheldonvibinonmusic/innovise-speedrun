@@ -215,11 +215,15 @@ class ApiClient {
     });
   }
 
-  // --- Research Report Retrieval ---
+  // --- Research Report Retrieval & Export ---
   async getReport(runId) {
     return this.request(`/reports/${encodeURIComponent(runId)}`, {
       method: 'GET',
     });
+  }
+
+  getReportPdfUrl(runId) {
+    return `${this.baseUrl}/reports/${encodeURIComponent(runId)}/export/pdf`;
   }
 
   // --- Human Review Sign-Off Cockpit ---
