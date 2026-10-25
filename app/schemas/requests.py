@@ -9,7 +9,7 @@ Enforces parameter bounds and required fields for API endpoints:
 """
 
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class CreateRunRequest(BaseModel):
@@ -56,6 +56,16 @@ class CreateRunRequest(BaseModel):
         default_factory=list,
         description="List of pre-uploaded Document IDs to include in the research scope.",
     )
+    website_url: Optional[str] = Field(
+        default=None,
+        max_length=1024,
+        description="Optional seed investor relations URL for Mode A acquisition.",
+        examples=["https://www.microsoft.com/investor"],
+    )
+    acquisition_mode: Optional[str] = Field(
+        default="upload",
+        description="Acquisition strategy: 'upload', 'website_discovery', 'sec_edgar', or 'combined'.",
+    )
 
     @field_validator("company_ticker")
     @classmethod
@@ -76,12 +86,27 @@ class CreateRunRequest(BaseModel):
 class CompanyDiscoverRequest(BaseModel):
     """Payload contract for POST /api/company/discover."""
 
-    ticker_or_cik: str = Field(
-        ...,
-        min_length=1,
-        max_length=32,
-        description="Stock ticker symbol or SEC CIK number.",
-        examples=["AAPL"],
+    ticker_or_cik: Optional[str] = Field(
+        default=None,
+        max_length=128,
+        description="Stock ticker symbol, company name, or SEC CIK number.",
+        examples=["MSFT", "AAPL", "Microsoft"],
+    )
+    company_name_or_ticker: Optional[str] = Field(
+        default=None,
+        max_length=128,
+        description="Alias for ticker_or_cik for frontend compatibility.",
+        examples=["MSFT", "Microsoft"],
+    )
+    company_name: Optional[str] = Field(
+        default=None,
+        max_length=255,
+        description="Company legal or commercial name.",
+    )
+    website_url: Optional[str] = Field(
+        default=None,
+        max_length=1024,
+        description="Official company or IR website URL for bounded document discovery.",
     )
     jurisdiction: str = Field(
         default="US",
@@ -94,8 +119,8 @@ class CompanyDiscoverRequest(BaseModel):
     )
     period: Optional[str] = Field(
         default=None,
-        description="Optional fiscal year/period filter (e.g., '2024').",
-        examples=["2024"],
+        description="Optional fiscal year/period filter (e.g., '2024', 'FY24', 'S1 24').",
+        examples=["FY24", "2024"],
     )
     max_periods: int = Field(
         default=3,
@@ -103,6 +128,17 @@ class CompanyDiscoverRequest(BaseModel):
         le=10,
         description="Maximum recent filing periods to fetch.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_identifiers(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            ident = data.get("ticker_or_cik") or data.get("company_name_or_ticker") or data.get("company_name")
+            if ident:
+                data["ticker_or_cik"] = str(ident).strip()
+            elif not data.get("website_url"):
+                raise ValueError("Must provide ticker_or_cik, company_name_or_ticker, or website_url.")
+        return data
 
 
 class DiscoveredFilingSchema(BaseModel):

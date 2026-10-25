@@ -40,6 +40,7 @@ def get_report(
         )
 
     claims = repo.get_claims_by_run_id(run_id)
+    structured = report.structured_data or {}
 
     return {
         "report_id": report.id,
@@ -50,7 +51,11 @@ def get_report(
         "verification_status": report.verification_status,
         "quality_score": float(report.quality_score) if report.quality_score else 1.0,
         "markdown_content": report.report_markdown,
-        "structured_data": report.structured_data,
+        "structured_data": structured,
+        # Direct top-level access for frontend convenience & schema reliability
+        "calculations": structured.get("calculations", []),
+        "verdicts": structured.get("verdicts", []),
+        "unresolved_uncertainties": structured.get("unresolved", []),
         "claims": [
             {
                 "claim_id": c.id,
@@ -59,9 +64,11 @@ def get_report(
                 "materiality": c.materiality,
                 "verification_status": c.verification_status,
                 "verification_notes": c.verification_notes,
-                "evidence_references": c.evidence_references,
-                "fact_ids": c.fact_ids,
+                "evidence_references": c.evidence_references or [],
+                "fact_ids": c.fact_ids or [],
                 "calculation_id": c.calculation_id,
+                "document_id": (c.evidence_references[0].split(":")[0] if c.evidence_references and ":" in c.evidence_references[0] else None),
+                "page_number": (int(c.evidence_references[0].split(":")[1]) if c.evidence_references and ":" in c.evidence_references[0] and c.evidence_references[0].split(":")[1].isdigit() else None),
             }
             for c in claims
         ],

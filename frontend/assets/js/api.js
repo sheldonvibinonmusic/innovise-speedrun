@@ -97,12 +97,21 @@ class ApiClient {
   }
 
   // --- Acquisition Mode A: Company / Permitted Website Discovery ---
-  async discoverCompany(companyNameOrTicker, jurisdiction = 'US') {
+  async discoverCompany(companyNameOrTicker, options = {}) {
+    const jurisdiction = typeof options === 'string' ? options : (options.jurisdiction || 'US');
+    const period = typeof options === 'object' ? (options.period || null) : null;
+    const websiteUrl = typeof options === 'object' ? (options.websiteUrl || null) : null;
+    const filingTypes = typeof options === 'object' && options.filingTypes ? options.filingTypes : ['10-K', '10-Q'];
+
     return this.request('/company/discover', {
       method: 'POST',
       body: {
+        ticker_or_cik: companyNameOrTicker,
         company_name_or_ticker: companyNameOrTicker,
         jurisdiction,
+        period,
+        website_url: websiteUrl,
+        filing_types: filingTypes,
       },
     });
   }

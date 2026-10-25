@@ -7,6 +7,7 @@ Manages persistent on-disk or in-memory vector collections using qdrant-client:
 - Full index rebuilding from persistent SQLite chunks
 """
 
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import uuid
@@ -14,6 +15,8 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 COLLECTION_NAME = "financial_chunks"
 VECTOR_DIM = 384
@@ -28,7 +31,18 @@ class QdrantVectorStore:
         else:
             storage_path = path or settings.qdrant_path
             storage_path.mkdir(parents=True, exist_ok=True)
-            self.client = QdrantClient(path=str(storage_path))
+            try:
+                self.client = QdrantClient(path=str(storage_path))
+            except RuntimeError as err:
+                if "already accessed by another instance" in str(err).lower():
+                    logger.warning(
+                        "Qdrant storage folder %s locked by another process. Falling back to in-memory store: %s",
+                        storage_path,
+                        err,
+                    )
+                    self.client = QdrantClient(location=":memory:")
+                else:
+                    raise
 
         self.collection_name = COLLECTION_NAME
         self._ensure_collection()

@@ -27,16 +27,17 @@ async def discover_company(
     repo: Repository = Depends(get_repository),
 ):
     """Discover company regulatory filings and return coverage manifest."""
+    ident = payload.ticker_or_cik or payload.company_name_or_ticker or payload.company_name or ""
     jurisdiction = (payload.jurisdiction or "US").upper()
 
     # 1. Indian Jurisdiction Connector Handling
     if jurisdiction == "IN":
         india_connector = IndiaSourcesConnector()
-        india_res = await india_connector.discover_company(payload.ticker_or_cik)
+        india_res = await india_connector.discover_company(ident)
         return CompanyDiscoverResponse(
-            company_name=payload.ticker_or_cik,
+            company_name=ident,
             cik="",
-            ticker=payload.ticker_or_cik.upper(),
+            ticker=ident.upper(),
             jurisdiction="IN",
             coverage_status="UNSUPPORTED_JURISDICTION",
             requested_period=payload.period,
@@ -49,7 +50,7 @@ async def discover_company(
     sec_connector = SecEdgarConnector()
     try:
         manifest = await sec_connector.fetch_filings(
-            company_id=payload.ticker_or_cik,
+            company_id=ident,
             filing_types=payload.filing_types,
             max_periods=payload.max_periods,
             period_filter=payload.period,
@@ -61,7 +62,7 @@ async def discover_company(
         )
 
     # Automatically register company in database if resolved successfully
-    if manifest.coverage_status in ("COVERAGE_AVAILABLE", "NO_FILINGS") and manifest.cik:
+    if manifest.coverage_status in ("COVERAGE_AVAILABLE", "NO_FILINGS", "NO_MATCHING_PERIOD") and manifest.cik:
         existing = repo.get_company_by_ticker(manifest.ticker)
         if not existing:
             repo.create_company(
@@ -70,6 +71,24 @@ async def discover_company(
                 jurisdiction="US",
                 external_source_id=manifest.cik,
             )
+
+    warnings = list(manifest.warnings)
+    if payload.website_url:
+        from app.ingestion.sources.website_crawler import WebsiteFinancialCrawler
+        try:
+            crawler = WebsiteFinancialCrawler()
+            web_manifest = await crawler.crawl_and_discover(
+                seed_url=payload.website_url,
+                company_name=manifest.company_name or ident,
+            )
+            if web_manifest.discovered_documents:
+                warnings.append(
+                    f"Discovered {len(web_manifest.discovered_documents)} online disclosures from {payload.website_url}."
+                )
+            elif web_manifest.coverage_status != "COVERAGE_AVAILABLE":
+                warnings.append(f"Website inspection: {web_manifest.coverage_status}")
+        except Exception as web_exc:
+            warnings.append(f"Website discovery notice: {str(web_exc)}")
 
     filings_schemas = [
         DiscoveredFilingSchema(
@@ -93,5 +112,5 @@ async def discover_company(
         requested_period=manifest.requested_period,
         available_periods=manifest.available_periods,
         discovered_filings=filings_schemas,
-        warnings=manifest.warnings,
+        warnings=warnings,
     )

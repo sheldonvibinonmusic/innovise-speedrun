@@ -94,6 +94,16 @@ async def acquire_sources_node(state: ResearchWorkflowState) -> Dict[str, Any]:
             "documents_found": len(crawler_res.discovered_documents),
         }
 
+    # Check if documents exist in DB for company if not explicitly passed
+    with SessionLocal() as db:
+        repo = Repository(db)
+        if not doc_ids and ticker:
+            comp = repo.get_company_by_ticker(ticker)
+            if comp:
+                existing_docs = repo.get_documents_by_company(comp.id)
+                if existing_docs:
+                    doc_ids.extend([d.id for d in existing_docs])
+
     return {
         "current_stage": "acquire_sources",
         "document_ids": doc_ids,
@@ -408,10 +418,20 @@ def synthesize_report_node(state: ResearchWorkflowState) -> Dict[str, Any]:
         verif_status = "VERIFIED"
         run_status = "completed"
 
-    # Build report Markdown
+    # Build dynamic, finding-specific executive summary
+    calc_highlights = []
+    for c in calcs:
+        name = c.get("metric_name")
+        res = c.get("formatted_result")
+        if name and res:
+            calc_highlights.append(f"{name} of {res}")
+    calc_str = f" Core verified metrics include {', '.join(calc_highlights)}." if calc_highlights else ""
+
     exec_summary = (
-        f"Multi-agent research analysis for {ticker} addressing inquiry: '{q}'. "
-        f"Verified {len(claims)} claims and {len(calcs)} deterministic calculations across 7 specialist perspectives."
+        f"Institutional financial research analysis for {ticker or 'subject entity'} addressing inquiry: '{q}'. "
+        f"Multi-agent workflow synthesized findings across 7 specialized analyst roles and evaluated evidence via 3 verification judges, "
+        f"concluding with an overall verification status of {verif_status}. "
+        f"Audited {len(claims)} candidate claims, {len(calcs)} deterministic arithmetic calculations, and {len(unresolved)} boundary caveats.{calc_str}"
     )
 
     report_lines = [
