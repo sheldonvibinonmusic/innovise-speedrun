@@ -3,42 +3,469 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Trustworthy Financial Research & Decision Support</title>
-  <!-- Core and Component Stylesheets -->
+  <title>FINANCIAL RESEARCH — Trustworthy Multi-Agent Decision Support</title>
+  <!-- Architectural Fonts & Style Sheets -->
   <link rel="stylesheet" href="assets/css/styles.css">
-  <link rel="stylesheet" href="assets/css/components.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect width='24' height='24' fill='%2304070d'/><path d='M6 20V12a6 6 0 0 1 12 0v8' stroke='%23e8d1cb' stroke-width='2' fill='none'/></svg>">
 </head>
 <body>
-  <div id="app" class="app-layout">
+
+  <!-- ========================================================================
+       1. Persistent Background Scene (Architectural Monolith & Water Anchor)
+       ======================================================================== -->
+  <div class="persistent-scene" id="persistentScene" aria-hidden="true">
+    <div class="scene-image-wrapper" id="sceneImageWrapper">
+      <img
+        class="scene-image"
+        src="assets/images/hero-arch.png"
+        alt="Architectural Monolithic Arch on Water"
+        loading="eager"
+      >
+    </div>
+    <div class="scene-vignette"></div>
+    <div class="scene-water-light"></div>
+  </div>
+
+  <!-- ========================================================================
+       2. Architectural Fine Outer Frame with Chamfered Corners
+       ======================================================================== -->
+  <div class="architectural-frame" aria-hidden="true">
+    <div class="frame-corner frame-corner-tl"></div>
+    <div class="frame-corner frame-corner-tr"></div>
+    <div class="frame-corner frame-corner-bl"></div>
+    <div class="frame-corner frame-corner-br"></div>
+    <span class="frame-coord frame-coord-tl">LAT 46.2044° N</span>
+    <span class="frame-coord frame-coord-tr">SYS_VER 3.0-PRO</span>
+    <span class="frame-coord frame-coord-bl">AIR GAP / SECURE</span>
+    <span class="frame-coord frame-coord-br">AUDIT_LOG IDLE</span>
+  </div>
+
+  <!-- ========================================================================
+       3. Main Application Container
+       ======================================================================== -->
+  <div class="app-container" id="appRoot">
+
+    <!-- Top Navigation Header -->
     <header class="app-header">
-      <div class="header-branding">
-        <h1 class="app-title">Trustworthy Financial Research</h1>
-        <span class="badge badge-subtle">Decision Support System</span>
+      <div class="brand-wrapper">
+        <svg class="brand-logo-arch" viewBox="0 0 22 28" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="Logo">
+          <path d="M1 27V11C1 5.47715 5.47715 1 11 1C16.5228 1 21 5.47715 21 11V27" stroke="#e8d1cb" stroke-width="1.8"/>
+          <path d="M6 27V14C6 11.2386 8.23858 9 11 9C13.7614 9 16 11.2386 16 14V27" stroke="#e8d1cb" stroke-width="1.2" stroke-dasharray="2 2"/>
+        </svg>
+        <span class="brand-wordmark">Financial Research</span>
       </div>
-      <nav class="app-nav" id="main-nav">
-        <button class="nav-tab active" data-page="research">Company Research</button>
-        <button class="nav-tab" data-page="documents">Document Vault</button>
-        <button class="nav-tab" data-page="reports">Research Reports</button>
-        <button class="nav-tab" data-page="review">Human Review</button>
+
+      <div class="header-status-pill" id="backendStatusPill" title="FastAPI Persistence & Qdrant Status">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusText">SYSTEM ONLINE</span>
+      </div>
+
+      <nav class="nav-views-pill" aria-label="Primary Navigation">
+        <button class="nav-btn active" id="navResearchBtn" data-view="landing">Research</button>
+        <button class="nav-btn" id="navReportBtn" data-view="report">Report</button>
+        <button class="nav-btn" id="navReviewBtn" data-view="review">Review</button>
+        <button class="nav-btn" id="navTraceBtn" data-view="trace">Trace</button>
       </nav>
     </header>
 
-    <main class="app-main" id="content-area">
-      <!-- Semantic container populated dynamically by ES modules in Phase 4 -->
-      <section class="placeholder-notice">
-        <h2>Phase 0 Initialized</h2>
-        <p>Frontend scaffold established. View modules and interactive components will be connected in Phase 4.</p>
+    <!-- Center Viewport Container -->
+    <main class="main-viewport" id="mainViewport">
+
+      <!-- ====================================================================
+           VIEW A: Acquisition & Input Console (Landing State)
+           ==================================================================== -->
+      <section class="landing-view" id="landingView">
+        <div class="hero-headline-block">
+          <span class="hero-tagline">Institutional Decision Support</span>
+          <h1 class="hero-title">Research That Shows Its Work</h1>
+          <p class="hero-subtitle">
+            Trace financial disclosures, compare reporting periods, and inspect the evidence behind every material finding.
+          </p>
+        </div>
+
+        <!-- Glass Console Card -->
+        <div class="glass-console">
+          <!-- Acquisition Mode Switcher -->
+          <div class="mode-toggle-group" role="tablist">
+            <button
+              class="mode-tab-btn active"
+              id="modeWebBtn"
+              role="tab"
+              aria-selected="true"
+            >
+              Mode A &mdash; Web Search
+            </button>
+            <button
+              class="mode-tab-btn"
+              id="modeUploadBtn"
+              role="tab"
+              aria-selected="false"
+            >
+              Mode B &mdash; Upload Documents
+            </button>
+          </div>
+
+          <!-- Common Inquiry Form -->
+          <div class="input-grid">
+            <div class="form-group input-full">
+              <label class="form-label" for="researchQuestionInput">Analytical Inquiry</label>
+              <input
+                type="text"
+                class="text-input"
+                id="researchQuestionInput"
+                value="Analyze Microsoft FY24 operating profitability, revenue trajectory, and key operational risks."
+                placeholder="Enter financial inquiry or research hypothesis..."
+              >
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="companyTickerInput">Company Ticker / Name</label>
+              <input
+                type="text"
+                class="text-input"
+                id="companyTickerInput"
+                value="MSFT"
+                placeholder="e.g. MSFT, AAPL, RELIANCE"
+              >
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="periodInput">Reporting Period</label>
+              <input
+                type="text"
+                class="text-input"
+                id="periodInput"
+                value="FY24"
+                placeholder="e.g. FY24, Q4 2024"
+              >
+            </div>
+          </div>
+
+          <!-- SUB-PANEL 1: Mode A - Official Website Discovery -->
+          <div class="acquisition-panel" id="webModePanel">
+            <div class="form-group" style="margin-bottom: 20px;">
+              <label class="form-label" for="websiteUrlInput">Official Investor Relations URL or Company Domain</label>
+              <input
+                type="text"
+                class="text-input"
+                id="websiteUrlInput"
+                value="https://www.microsoft.com/investor"
+                placeholder="https://company.com/investor"
+              >
+            </div>
+
+            <!-- Discovery Manifest Results Box (if triggered) -->
+            <div id="discoveryResultsBox" style="display: none; margin-bottom: 20px;"></div>
+
+            <div style="display: flex; gap: 12px;">
+              <button class="btn-secondary" id="findDocumentsBtn" style="flex: 1;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+                </svg>
+                Find Documents
+              </button>
+              <button class="btn-primary" id="processResearchWebBtn" style="flex: 1.5;">
+                Process Research
+              </button>
+            </div>
+          </div>
+
+          <!-- SUB-PANEL 2: Mode B - Multi-File Document Upload -->
+          <div class="acquisition-panel" id="uploadModePanel" style="display: none;">
+            <!-- Drag & Drop Zone -->
+            <div class="dropzone-box" id="dropZone">
+              <input
+                type="file"
+                id="fileInput"
+                multiple
+                accept=".pdf,.pptx,application/pdf,application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                style="display: none;"
+              >
+              <svg class="dropzone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+              <div class="dropzone-title">Drop Financial Documents Here</div>
+              <div class="dropzone-subtitle">PDF and PowerPoint files (up to 300 files queue)</div>
+              <button type="button" class="btn-secondary" id="browseFilesBtn">
+                Browse Files
+              </button>
+            </div>
+
+            <!-- Upload Queue Table -->
+            <div class="upload-queue-container" id="uploadQueueContainer" style="display: none;">
+              <div class="upload-queue-header">
+                <span>Document Queue (<span id="queueCount">0</span>)</span>
+                <span id="queueTotalSize">0 MB</span>
+                <button type="button" class="btn-secondary" id="clearQueueBtn" style="padding: 2px 8px; font-size: 10px;">Clear</button>
+              </div>
+              <div id="queueRowsList"></div>
+            </div>
+
+            <button class="btn-primary" id="processResearchUploadBtn">
+              Process Research
+            </button>
+          </div>
+
+        </div>
       </section>
+
+      <!-- ====================================================================
+           VIEW B: Signature Research Progress & Stage Assembly
+           ==================================================================== -->
+      <section class="progress-panel" id="progressPanel" style="display: none;">
+        <div class="progress-header-arch">
+          <!-- Animated Arch Scanner SVG -->
+          <svg class="arch-scan-svg" viewBox="0 0 72 92" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="1" y="1" width="70" height="90" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+            <path class="arch-path" d="M12 91V46C12 32.7452 22.7452 22 36 22C49.2548 22 60 32.7452 60 46V91"/>
+            <circle class="arch-glow-point" cx="36" cy="22" r="3"/>
+          </svg>
+          <h2 class="progress-run-title" id="progressTitle">Analyzing Disclosures & Figures</h2>
+          <div class="progress-run-subtitle" id="progressSubtitle">
+            RUN ID: <span id="progressRunIdSpan">INITIALIZING...</span> &bull; SUPERVISOR ACTIVE
+          </div>
+        </div>
+
+        <!-- Master Progress Track -->
+        <div class="master-progress-track" style="margin-bottom: 24px;">
+          <div class="master-progress-fill" id="masterProgressFill" style="width: 15%;"></div>
+        </div>
+
+        <!-- 6 User-Facing Workflow Stages -->
+        <div class="stages-list" id="stagesList">
+          <div class="stage-item stage-active" data-stage-idx="1" id="stageItem1">
+            <div class="stage-badge-icon">1</div>
+            <div class="stage-text-block">
+              <div class="stage-label">Locating financial documents</div>
+              <div class="stage-subdetail" id="stageDetail1">Inspecting SEC EDGAR & registered disclosures...</div>
+            </div>
+          </div>
+          <div class="stage-item" data-stage-idx="2" id="stageItem2">
+            <div class="stage-badge-icon">2</div>
+            <div class="stage-text-block">
+              <div class="stage-label">Preparing document evidence</div>
+              <div class="stage-subdetail" id="stageDetail2">Layout table extraction and chunk alignment...</div>
+            </div>
+          </div>
+          <div class="stage-item" data-stage-idx="3" id="stageItem3">
+            <div class="stage-badge-icon">3</div>
+            <div class="stage-text-block">
+              <div class="stage-label">Retrieving relevant passages</div>
+              <div class="stage-subdetail" id="stageDetail3">Hybrid vector, lexical, and multi-hop expansion...</div>
+            </div>
+          </div>
+          <div class="stage-item" data-stage-idx="4" id="stageItem4">
+            <div class="stage-badge-icon">4</div>
+            <div class="stage-text-block">
+              <div class="stage-label">Checking financial figures</div>
+              <div class="stage-subdetail" id="stageDetail4">Deterministic Decimal arithmetic & margin formulas...</div>
+            </div>
+          </div>
+          <div class="stage-item" data-stage-idx="5" id="stageItem5">
+            <div class="stage-badge-icon">5</div>
+            <div class="stage-text-block">
+              <div class="stage-label">Reviewing claims and risks</div>
+              <div class="stage-subdetail" id="stageDetail5">7 specialist analysts & 3 tripartite audit judges...</div>
+            </div>
+          </div>
+          <div class="stage-item" data-stage-idx="6" id="stageItem6">
+            <div class="stage-badge-icon">6</div>
+            <div class="stage-text-block">
+              <div class="stage-label">Preparing the research report</div>
+              <div class="stage-subdetail" id="stageDetail6">Quality supervisor audit and synthesis...</div>
+            </div>
+          </div>
+        </div>
+
+        <div style="text-align: center;">
+          <button class="btn-secondary" id="cancelRunBtn" style="padding: 6px 14px; font-size: 11px;">
+            Cancel or Return
+          </button>
+        </div>
+      </section>
+
+      <!-- ====================================================================
+           VIEW C: Research Report & Verification Workspace
+           ==================================================================== -->
+      <section class="report-workspace" id="reportWorkspace" style="display: none;">
+        <!-- Header Banner -->
+        <div class="report-header-banner">
+          <div class="report-title-group">
+            <h2 id="reportHeaderTitle">Financial Research Report: MSFT</h2>
+            <div class="report-inquiry" id="reportHeaderInquiry">Inquiry: ...</div>
+          </div>
+          <div id="reportVerificationStatusBadge" class="report-verification-badge badge-verified">
+            VERIFIED
+          </div>
+        </div>
+
+        <!-- 1. Executive Summary -->
+        <div class="report-section">
+          <div class="section-heading">Executive Summary</div>
+          <div class="exec-summary-card" id="execSummaryContent">
+            Generating summary...
+          </div>
+        </div>
+
+        <!-- 2. Deterministic Financial Scorecard -->
+        <div class="report-section">
+          <div class="section-heading">Deterministic Calculations & Ratios</div>
+          <div class="scorecard-grid" id="metricsScorecardGrid">
+            <!-- Dynamically populated calculation cards -->
+          </div>
+        </div>
+
+        <!-- 3. Core Findings & Verified Claims -->
+        <div class="report-section">
+          <div class="section-heading">Core Findings & Traceable Claims</div>
+          <div class="claims-container" id="claimsContainer">
+            <!-- Dynamically populated claims -->
+          </div>
+        </div>
+
+        <!-- 4. Risk Factors & Counter-Evidence -->
+        <div class="report-section">
+          <div class="section-heading">Risk Factors & Counter-Evidence</div>
+          <div class="claims-container" id="risksContainer">
+            <!-- Dynamically populated risks & counter-evidence -->
+          </div>
+        </div>
+
+        <!-- 5. Verification Summary -->
+        <div class="report-section">
+          <div class="section-heading">Verification Judges & Supervision Gate</div>
+          <div class="scorecard-grid" id="verificationSummaryGrid">
+            <!-- Tripartite verdicts -->
+          </div>
+        </div>
+
+        <!-- 6. Unresolved Limitations & Caveats -->
+        <div class="report-section" id="unresolvedSection" style="display: none;">
+          <div class="section-heading">Unresolved Questions & Scope Caveats</div>
+          <div class="exec-summary-card" id="unresolvedContent" style="border-left-color: var(--status-qualified);">
+          </div>
+        </div>
+
+        <!-- Human Review Sign-Off Cockpit (Inside Report) -->
+        <div class="review-cockpit-box" id="embeddedReviewBox">
+          <div class="section-heading" style="margin-bottom: 12px;">Human Analyst Sign-Off Cockpit</div>
+          <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 16px;">
+            Institutional decision-support protocol requires explicit human sign-off before downstream committee presentation.
+          </p>
+
+          <div class="decision-button-group">
+            <button type="button" class="btn-decision active-approved" data-decision="APPROVED" id="decApproveBtn">
+              &check; Approve Report
+            </button>
+            <button type="button" class="btn-decision" data-decision="QUALIFIED" id="decQualifyBtn">
+              ! Qualify with Caveats
+            </button>
+            <button type="button" class="btn-decision" data-decision="REJECTED" id="decRejectBtn">
+              &times; Reject Findings
+            </button>
+          </div>
+
+          <div class="input-grid" style="margin-bottom: 14px;">
+            <div class="form-group">
+              <label class="form-label" for="reviewerNameInput">Reviewer Name / ID</label>
+              <input type="text" class="text-input" id="reviewerNameInput" value="Senior Financial Analyst">
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="reviewCommentsInput">Audit Comments & Rationale</label>
+              <input type="text" class="text-input" id="reviewCommentsInput" placeholder="Enter auditor remarks...">
+            </div>
+          </div>
+
+          <button class="btn-primary" id="submitReviewBtn">
+            Submit Review Decision
+          </button>
+        </div>
+      </section>
+
+      <!-- ====================================================================
+           VIEW D: Execution Audit Trace Viewer
+           ==================================================================== -->
+      <section class="report-workspace" id="traceWorkspace" style="display: none;">
+        <div class="report-header-banner">
+          <div>
+            <h2>Chronological Execution Trace</h2>
+            <div class="report-inquiry">Complete immutable event log persisted in SQLite for audit reproducibility.</div>
+          </div>
+        </div>
+
+        <div class="upload-queue-container" style="max-height: 480px;">
+          <div class="upload-queue-header">
+            <span>Timestamp</span>
+            <span>Stage / Event Type</span>
+            <span>Outcome</span>
+          </div>
+          <div id="traceEventsList">
+            <!-- Trace events populated dynamically -->
+          </div>
+        </div>
+      </section>
+
     </main>
 
-    <footer class="app-footer">
-      <p class="footer-disclaimer">
-        Strict Decision Support Mode — Not an automated broker or execution agent. All research findings require independent analyst verification.
-      </p>
+    <!-- Footer -->
+    <footer style="text-align: center; padding: 16px 0; border-top: 1px solid rgba(255,255,255,0.06); font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); letter-spacing: 0.1em; text-transform: uppercase;">
+      Institutional Decision Support &bull; Zero Autonomous Trading &bull; Citation-Backed Provenance Guaranteed
     </footer>
+
   </div>
 
-  <!-- Application Entry Point (ES Module) -->
+  <!-- ========================================================================
+       4. Claim Evidence Inspector Drawer (Side Drawer Overlay)
+       ======================================================================== -->
+  <div class="inspector-overlay" id="inspectorOverlay" aria-hidden="true">
+    <div class="inspector-drawer" id="inspectorDrawer" role="dialog" aria-labelledby="inspectorTitle">
+      <div class="inspector-header">
+        <span class="inspector-title" id="inspectorTitle">Evidence Provenance Inspector</span>
+        <button type="button" class="close-btn" id="closeInspectorBtn" aria-label="Close Evidence Inspector">&times;</button>
+      </div>
+
+      <div style="margin-bottom: 16px;">
+        <div class="form-label">Material Finding</div>
+        <div id="inspectorClaimText" style="font-size: 13.5px; color: var(--text-primary); margin-top: 4px; line-height: 1.5;"></div>
+      </div>
+
+      <div style="margin-bottom: 20px;">
+        <div class="form-label">Verified Source Excerpt</div>
+        <div class="inspector-quote-box" id="inspectorExcerptText"></div>
+      </div>
+
+      <div class="input-grid" style="margin-bottom: 20px;">
+        <div class="form-group">
+          <span class="form-label">Document ID</span>
+          <span class="text-input" id="inspectorDocId" style="font-family: var(--font-mono); font-size: 11px;"></span>
+        </div>
+        <div class="form-group">
+          <span class="form-label">Page / Coordinate</span>
+          <span class="text-input" id="inspectorPageNum" style="font-family: var(--font-mono); font-size: 11px;"></span>
+        </div>
+      </div>
+
+      <div style="margin-bottom: 20px;">
+        <div class="form-label">Verification Outcome</div>
+        <div id="inspectorVerdictBadge" style="margin-top: 6px;"></div>
+      </div>
+
+      <!-- Claim-level Review Action in Inspector -->
+      <div style="border-top: 1px solid rgba(255,255,255,0.08); padding-top: 18px; margin-top: auto;">
+        <div class="form-label" style="margin-bottom: 8px;">Analyst Claim Override</div>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn-secondary" id="claimApproveBtn" style="flex: 1;">&check; Confirm</button>
+          <button class="btn-secondary" id="claimQualifyBtn" style="flex: 1;">! Caveat</button>
+          <button class="btn-secondary" id="claimRejectBtn" style="flex: 1; border-color: rgba(240,82,82,0.3);">&times; Reject</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div id="toastContainer" aria-live="polite"></div>
+
+  <!-- Main ES Module Script -->
   <script type="module" src="assets/js/app.js"></script>
 </body>
 </html>

@@ -340,14 +340,35 @@ Long-running research jobs are executed asynchronously with explicit status trac
 
 ---
 
-### 11. Submit Human Review Decision (Deferred to Phase 4)
+### 11. Submit Human Review Decision (Phase 4 Implemented)
 - **Endpoint**: `POST /api/runs/{run_id}/review`
-- **Response** (`501 Not Implemented` in Phase 1-3):
+- **Summary**: Records human analyst sign-off (`APPROVED`, `QUALIFIED`, or `REJECTED`), audit remarks, and claim-level overrides in SQLite.
+- **Request** (`application/json`):
   ```json
   {
-    "error": {
-      "code": "NOT_IMPLEMENTED",
-      "message": "Human review workflow is deferred to Phase 4."
-    }
+    "overall_decision": "APPROVED",
+    "reviewer_name": "Chief Risk Officer",
+    "comments": "Audited against primary Form 10-K filing; calculations reconciled.",
+    "claim_overrides": [
+      {
+        "claim_id": "clm_62d8_0000",
+        "new_status": "VERIFIED",
+        "notes": "Verified against 10-K Income Statement table."
+      }
+    ]
+  }
+  ```
+- **Response** (`200 OK`):
+  ```json
+  {
+    "run_id": "run_987654321",
+    "overall_decision": "APPROVED",
+    "reviewer_name": "Chief Risk Officer",
+    "status": "approved",
+    "verification_status": "APPROVED",
+    "claim_overrides_applied": 1,
+    "comments": "Audited against primary Form 10-K filing; calculations reconciled.",
+    "reviewed_at": "2026-10-25T05:30:00Z",
+    "message": "Human review decision 'APPROVED' recorded successfully."
   }
   ```

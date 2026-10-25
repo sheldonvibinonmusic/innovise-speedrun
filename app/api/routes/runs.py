@@ -7,6 +7,7 @@ Endpoints:
 - POST /api/runs/{run_id}/review (Human review endpoint placeholder)
 """
 
+from datetime import datetime, timezone
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 
@@ -219,14 +220,15 @@ async def execute_run(
 @router.post(
     "/{run_id}/review",
     summary="Submit human review sign-off",
-    description="Endpoint for human analyst approval or overrides. Deferred to Phase 4.",
+    description="Endpoint for human analyst approval, qualification, or overrides.",
+    status_code=status.HTTP_200_OK,
 )
 def submit_review(
     run_id: str,
     payload: SubmitReviewRequest,
     repo: Repository = Depends(get_repository),
 ):
-    """Human review cockpit endpoint."""
+    """Human review cockpit endpoint persisting reviewer sign-off and claim overrides."""
     run = repo.get_run_by_id(run_id)
     if not run:
         raise HTTPException(
@@ -234,7 +236,73 @@ def submit_review(
             detail=f"Research run '{run_id}' not found.",
         )
 
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Human review workflow is deferred to Phase 4.",
+    decision_upper = payload.overall_decision.upper()
+    valid_decisions = {"APPROVED", "QUALIFIED", "REJECTED"}
+    if decision_upper not in valid_decisions:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid overall_decision '{payload.overall_decision}'. Must be one of: {sorted(list(valid_decisions))}",
+        )
+
+    run_status_map = {
+        "APPROVED": "approved",
+        "QUALIFIED": "completed_with_warnings",
+        "REJECTED": "rejected",
+    }
+    repo.update_run_status(run_id, status=run_status_map[decision_upper])
+
+    report = repo.get_report_by_run_id(run_id)
+    if report:
+        report.verification_status = decision_upper
+        s_data = dict(report.structured_data or {})
+        review_history = list(s_data.get("review_history", []))
+        review_entry = {
+            "decision": decision_upper,
+            "reviewer_name": payload.reviewer_name,
+            "comments": payload.comments,
+            "claim_overrides": payload.claim_overrides,
+            "reviewed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        review_history.append(review_entry)
+        s_data["review_history"] = review_history
+        s_data["human_review"] = review_entry
+        report.structured_data = s_data
+        repo.db.commit()
+
+    applied_overrides = []
+    for override in payload.claim_overrides:
+        claim_id = override.get("claim_id")
+        new_status = override.get("new_status") or override.get("action")
+        notes = override.get("notes") or override.get("rationale")
+        if claim_id and new_status:
+            updated_claim = repo.update_claim_verification(claim_id, str(new_status).upper(), notes)
+            if updated_claim:
+                applied_overrides.append({
+                    "claim_id": claim_id,
+                    "status": str(new_status).upper(),
+                    "notes": notes,
+                })
+
+    repo.create_event(
+        run_id=run_id,
+        node_or_stage="human_review",
+        status_or_code="HUMAN_REVIEW_SUBMITTED",
+        details={
+            "overall_decision": decision_upper,
+            "reviewer_name": payload.reviewer_name,
+            "comments": payload.comments,
+            "claim_overrides": applied_overrides,
+        },
     )
+
+    return {
+        "run_id": run_id,
+        "overall_decision": decision_upper,
+        "reviewer_name": payload.reviewer_name,
+        "status": run_status_map[decision_upper],
+        "verification_status": report.verification_status if report else decision_upper,
+        "claim_overrides_applied": len(applied_overrides),
+        "comments": payload.comments,
+        "reviewed_at": datetime.now(timezone.utc).isoformat(),
+        "message": f"Human review decision '{decision_upper}' recorded successfully.",
+    }

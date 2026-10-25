@@ -45,7 +45,20 @@ Phase 2 introduces automated financial document discovery, layout-aware parsing,
 | `POST` | `/api/retrieval/search` | **Implemented** | Hybrid search (Dense + BM25 + RRF + Structured Facts + Counter-Evidence) |
 | `POST` | `/api/retrieval/rebuild` | **Implemented** | Synchronizes and rebuilds search indices directly from SQLite |
 | `GET` | `/api/reports/{run_id}` | **Implemented** | Returns synthesized, citation-backed report with deterministic calculations |
-| `POST` | `/api/runs/{run_id}/review` | *Deferred to Phase 4* | Returns 501; human review approval/override cockpit |
+| `POST` | `/api/runs/{run_id}/review` | **Implemented** | Human review sign-off and claim override cockpit |
+
+---
+
+## Interactive Frontend Experience (Phase 4 Implemented)
+
+Phase 4 introduces an architectural single-page financial research interface mounted directly at `/ui` (or runnable via static web servers):
+- **Visual Identity**: Dark navy atmosphere (`#04070d`), dark glass panels (`rgba(11, 16, 26, 0.78)`), fine borders (`rgba(255, 255, 255, 0.13)`), warm stone/ivory accents (`#e8d1cb`), and subtle pointer parallax.
+- **Persistent Scene**: The central architectural arch image remains mounted continuously across all modes, uploads, progress phases, report reviews, and inspector drawers.
+- **Acquisition Modes**:
+  - **Mode A (Web Search)**: SEC EDGAR and official company disclosure discovery with live filing coverage manifests.
+  - **Mode B (Upload Documents)**: Drag-and-drop queue supporting PDF and PowerPoint (`.pptx`) decks with real byte progress and bounded 3-file transfer concurrency.
+- **Signature Architectural Scan**: Maps backend execution trace events to 6 user-facing stages without simulated timers.
+- **Report & Scorecard Workspace**: Interactive metric scorecard, risk audit factors, claim-level evidence inspector, and human review sign-off cockpit.
 
 ---
 
@@ -66,6 +79,7 @@ Launch the server with Uvicorn:
 ```bash
 python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
+- Interactive Research Web UI: `http://127.0.0.1:8000/ui`
 - Interactive Swagger UI: `http://127.0.0.1:8000/docs`
 - Health check probe: `http://127.0.0.1:8000/api/health`
 

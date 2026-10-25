@@ -4,12 +4,14 @@ Trustworthy Multi-Agent Financial Research and Decision Support System.
 """
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncGenerator
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import api_router
 from app.config import settings
@@ -57,6 +59,11 @@ def create_app() -> FastAPI:
 
     # Register API routes
     app.include_router(api_router)
+
+    # Mount frontend static web application
+    frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
+    if frontend_dir.exists():
+        app.mount("/ui", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")
 
     # Structured error handlers
     @app.exception_handler(HTTPException)
