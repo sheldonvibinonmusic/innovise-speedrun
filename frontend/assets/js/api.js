@@ -223,7 +223,11 @@ class ApiClient {
   }
 
   getReportPdfUrl(runId) {
-    return `${this.baseUrl}/reports/${encodeURIComponent(runId)}/export/pdf`;
+    let cleanId = runId;
+    if (typeof cleanId === 'object' && cleanId !== null) {
+      cleanId = cleanId.run_id || cleanId.activeRunId || cleanId.id || '';
+    }
+    return `${this.baseUrl}/reports/${encodeURIComponent(String(cleanId || '').trim())}/export/pdf`;
   }
 
   // --- Human Review Sign-Off Cockpit ---

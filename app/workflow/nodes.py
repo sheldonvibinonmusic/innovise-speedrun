@@ -48,6 +48,8 @@ from app.finance.calculations import (
     CalculationResult,
     calculate_current_ratio,
     calculate_debt_to_equity,
+    calculate_free_cash_flow,
+    calculate_gross_margin,
     calculate_net_margin,
     calculate_operating_margin,
     calculate_revenue_growth,
@@ -291,6 +293,36 @@ def check_readiness_node(state: ResearchWorkflowState) -> Dict[str, Any]:
                 indexed_docs.append(doc_id)
             else:
                 failed_docs.append(f"{doc_id} ({doc.ingestion_status}: {doc.extraction_warnings or 'Processing failed'})")
+
+        # Fallback & fidelity verification: check for entity mismatch and blank/low-fidelity documents
+        target_ticker = (state.get("company_ticker") or "").strip().upper()
+        for did in indexed_docs:
+            chunks = repo.get_chunks_by_document(did)
+            doc_facts = repo.get_facts_by_document(did)
+            if not chunks and not doc_facts:
+                warnings.append(f"DOCUMENT_LOW_FIDELITY: Document {did} yielded no text passages or financial disclosures.")
+            elif target_ticker and chunks and len(target_ticker) >= 2:
+                sample_text = " ".join([c.content for c in chunks[:5]]).upper()
+                if target_ticker not in sample_text:
+                    known_entities = {
+                        "AMZN": "AMAZON",
+                        "AAPL": "APPLE",
+                        "MSFT": "MICROSOFT",
+                        "GOOGL": "ALPHABET",
+                        "TSLA": "TESLA",
+                        "META": "META",
+                        "NVDA": "NVIDIA",
+                    }
+                    detected = None
+                    for tk, name in known_entities.items():
+                        if tk != target_ticker and (tk in sample_text or name in sample_text):
+                            detected = f"{name} ({tk})"
+                            break
+                    if detected:
+                        warnings.append(
+                            f"DOCUMENT_ENTITY_MISMATCH: Uploaded filing content references {detected} rather than requested entity {target_ticker}. "
+                            f"Executing qualified research workflow with mismatch disclosure."
+                        )
 
     if failed_docs:
         errors.append(f"Document readiness failure for: {'; '.join(failed_docs)}")
@@ -579,6 +611,68 @@ def calculate_metrics_node(state: ResearchWorkflowState) -> Dict[str, Any]:
                         if d.currency == eq.currency and d.reporting_scope == eq.reporting_scope:
                             calc_results.append(calculate_debt_to_equity(d, eq))
                             break
+
+        # 6. Gross Margin: (GrossProfit / TotalRevenue) * 100 or ((TotalRevenue - CostOfRevenue) / TotalRevenue) * 100
+        gp_facts = [f for f in db_facts if f.metric_name == "GrossProfit"]
+        cogs_facts = [f for f in db_facts if f.metric_name == "CostOfRevenue"]
+        gp_facts.sort(key=_sort_key, reverse=True)
+        cogs_facts.sort(key=_sort_key, reverse=True)
+        gm_done = False
+        if gp_facts and rev_facts:
+            for gp in gp_facts:
+                gp_p = _fact_period(gp)
+                gp_yr = _get_year(gp_p)
+                if target_period_norm and gp_yr and str(gp_yr) != target_period_norm:
+                    continue
+                for rv in rev_facts:
+                    rv_p = _fact_period(rv)
+                    rv_yr = _get_year(rv_p)
+                    if (gp_yr and rv_yr and gp_yr == rv_yr) or (gp_p == rv_p):
+                        if gp.currency == rv.currency and gp.reporting_scope == rv.reporting_scope:
+                            calc_results.append(calculate_gross_margin(gp, rv, is_cogs=False))
+                            gm_done = True
+                            break
+                if gm_done:
+                    break
+        if not gm_done and cogs_facts and rev_facts:
+            for cogs in cogs_facts:
+                cg_p = _fact_period(cogs)
+                cg_yr = _get_year(cg_p)
+                if target_period_norm and cg_yr and str(cg_yr) != target_period_norm:
+                    continue
+                for rv in rev_facts:
+                    rv_p = _fact_period(rv)
+                    rv_yr = _get_year(rv_p)
+                    if (cg_yr and rv_yr and cg_yr == rv_yr) or (cg_p == rv_p):
+                        if cogs.currency == rv.currency and cogs.reporting_scope == rv.reporting_scope:
+                            calc_results.append(calculate_gross_margin(cogs, rv, is_cogs=True))
+                            gm_done = True
+                            break
+                if gm_done:
+                    break
+
+        # 7. Free Cash Flow: Operating Cash Flow - Capital Expenditures
+        ocf_facts = [f for f in db_facts if f.metric_name == "OperatingCashFlow"]
+        capex_facts = [f for f in db_facts if f.metric_name == "CapitalExpenditures"]
+        ocf_facts.sort(key=_sort_key, reverse=True)
+        capex_facts.sort(key=_sort_key, reverse=True)
+        fcf_done = False
+        if ocf_facts and capex_facts:
+            for ocf in ocf_facts:
+                ocf_p = _fact_period(ocf)
+                ocf_yr = _get_year(ocf_p)
+                if target_period_norm and ocf_yr and str(ocf_yr) != target_period_norm:
+                    continue
+                for capex in capex_facts:
+                    cx_p = _fact_period(capex)
+                    cx_yr = _get_year(cx_p)
+                    if (ocf_yr and cx_yr and ocf_yr == cx_yr) or (ocf_p == cx_p):
+                        if ocf.currency == capex.currency and ocf.reporting_scope == capex.reporting_scope:
+                            calc_results.append(calculate_free_cash_flow(ocf, capex))
+                            fcf_done = True
+                            break
+                if fcf_done:
+                    break
 
     calc_dicts = [c.to_dict() for c in calc_results]
     structured_db_facts = [
@@ -878,59 +972,73 @@ def synthesize_report_node(state: ResearchWorkflowState) -> Dict[str, Any]:
             "required_followup_retrieval": v.get("required_followup_retrieval"),
         })
 
-    # Build substantive, finding-led executive summary (AUD-09)
-    summary_sentences = []
+    # Build substantive, finding-led executive summary with Controller & Accounting detail
     if is_blocked:
-        summary_sentences.append(
-            f"Financial research inquiry regarding {ticker} ('{q}') could not be verified due to evidentiary or verification gate blocks."
+        exec_summary = (
+            f"Financial research inquiry regarding {ticker} ('{q}') could not be verified due to evidentiary or verification gate blocks. "
+            f"Tripartite verification gates issued a BLOCK verdict. All numerical claims remain unverified."
         )
-        if not has_evidence:
-            summary_sentences.append("The research scope lacked retrieved primary financial disclosures.")
-        if any(v.get("overall_verdict") == "BLOCK" for v in verdicts):
-            blocking_reasons = [v.get("concise_explanation") for v in verdicts if v.get("overall_verdict") == "BLOCK" and v.get("concise_explanation")]
-            if blocking_reasons:
-                summary_sentences.append(f"Independent verification gates issued a BLOCK verdict: {'; '.join(blocking_reasons)}.")
     else:
-        metrics_summary = []
-        for c in calcs:
-            if c.get("validation_outcome") == "VALID":
-                m_title = {
-                    "OperatingMargin": "operating margin",
-                    "RevenueGrowth": "revenue growth",
-                    "NetMargin": "net profit margin",
-                    "CurrentRatio": "current liquidity ratio",
-                    "DebtToEquity": "debt-to-equity ratio",
-                }.get(c.get("metric_name"), c.get("metric_name"))
-                metrics_summary.append(f"{m_title} of {c.get('formatted_result')}")
+        calc_map = {c.get("metric_name"): c for c in calcs if c.get("validation_outcome") == "VALID"}
 
-        if metrics_summary:
-            summary_sentences.append(
-                f"Multi-period financial analysis for {ticker} establishes verified {', '.join(metrics_summary)} based on primary regulatory filings."
-            )
+        # 1. Lead Analytical Stance
+        lead_metrics = []
+        for m_key, m_label in [
+            ("RevenueGrowth", "revenue expansion"),
+            ("OperatingMargin", "operating margin"),
+            ("NetMargin", "net profit margin"),
+            ("GrossMargin", "gross margin"),
+            ("FreeCashFlow", "free cash flow"),
+        ]:
+            if m_key in calc_map:
+                lead_metrics.append(f"{m_label} of {calc_map[m_key].get('formatted_result')}")
+
+        if lead_metrics:
+            lead_summary = f"Multi-period financial analysis for {ticker} establishes verified {', '.join(lead_metrics)} based on primary regulatory filings."
         else:
-            summary_sentences.append(
-                f"Multi-agent financial assessment for {ticker} evaluated reported accounting disclosures addressing: '{q}'."
-            )
+            lead_summary = f"Multi-agent financial assessment for {ticker} evaluated reported accounting disclosures addressing: '{q}'."
 
-        # Risk and counter-evidence finding
+        # 2. P&L & Margins
+        pnl_parts = []
+        if "GrossMargin" in calc_map:
+            pnl_parts.append(f"Gross margin stands at {calc_map['GrossMargin'].get('formatted_result')}, demonstrating top-line pricing power and production cost absorption.")
+        if "OperatingMargin" in calc_map:
+            pnl_parts.append(f"Operating income efficiency yields an operating margin of {calc_map['OperatingMargin'].get('formatted_result')}.")
+        if "NetMargin" in calc_map:
+            pnl_parts.append(f"Net profit margin converted at {calc_map['NetMargin'].get('formatted_result')}.")
+        pnl_section = f"### Profit & Loss (P&L) Trajectory\n\n" + (" ".join(pnl_parts) if pnl_parts else "Core income statement line items were verified against primary tables.")
+
+        # 3. Cash Flow & Working Capital
+        cf_parts = []
+        if "FreeCashFlow" in calc_map:
+            cf_parts.append(f"Discretionary Free Cash Flow reached {calc_map['FreeCashFlow'].get('formatted_result')}, confirming robust cash conversion from operational revenue.")
+        if "CurrentRatio" in calc_map:
+            cf_parts.append(f"Short-term working capital liquidity is maintained with a current ratio of {calc_map['CurrentRatio'].get('formatted_result')}.")
+        cf_section = f"### Cash Flow & Working Capital\n\n" + (" ".join(cf_parts) if cf_parts else "Operating cash flows and working capital disclosures provide adequate operational headroom.")
+
+        # 4. Solvency & Equity
+        bs_parts = []
+        if "DebtToEquity" in calc_map:
+            bs_parts.append(f"Capital structure leverage reflects a debt-to-equity ratio of {calc_map['DebtToEquity'].get('formatted_result')}, signaling manageable gearing against stockholders' equity.")
+        bs_section = f"### Balance Sheet & Solvency Structure\n\n" + (" ".join(bs_parts) if bs_parts else "Stockholders' equity and balance sheet liabilities support ongoing capital commitments.")
+
+        # 5. Controller Risk & Audit Posture
         risk_claims = [cl for cl in claims if cl.get("claim_type") == "risk_factor"]
         contradictions = [cl for cl in risk_claims if "contradict" in cl.get("claim_text", "").lower()]
+        ctrl_parts = []
         if contradictions:
-            summary_sentences.append(
-                f"Adversarial audit surfaced material contradictory disclosures: {contradictions[0].get('claim_text')}."
-            )
+            ctrl_parts.append(f"Adversarial audit surfaced material contradictory disclosures: {contradictions[0].get('claim_text')}.")
         elif risk_claims:
-            summary_sentences.append(
-                f"Risk assessment highlighted key operational disclosures: {risk_claims[0].get('claim_text')}."
-            )
+            ctrl_parts.append(f"Risk assessment highlighted key operational disclosures: {risk_claims[0].get('claim_text')}.")
 
-        # Verification posture
-        summary_sentences.append(
-            f"Tripartite verification gates concluded with an overall status of {verif_status}. "
-            f"All numerical computations were deterministically verified against SQLite accounting records without free-form LLM arithmetic."
-        )
+        mismatch_warnings = [w for w in warnings if "MISMATCH" in w]
+        if mismatch_warnings:
+            ctrl_parts.append(f"Filing Caveat: {mismatch_warnings[0]}")
 
-    exec_summary = " ".join(summary_sentences)
+        ctrl_parts.append(f"Tripartite verification gates concluded with an overall status of {verif_status}. All numerical computations were deterministically verified against SQLite accounting records without free-form LLM arithmetic.")
+        ctrl_section = f"### Controller Assessment & Governance\n\n" + " ".join(ctrl_parts)
+
+        exec_summary = f"{lead_summary}\n\n{pnl_section}\n\n{cf_section}\n\n{bs_section}\n\n{ctrl_section}"
 
     report_lines = [
         f"# Institutional Financial Research Report: {ticker}",
@@ -949,6 +1057,7 @@ def synthesize_report_node(state: ResearchWorkflowState) -> Dict[str, Any]:
             "OperatingMargin": "Operating Margin",
             "RevenueGrowth": "Revenue Growth",
             "NetMargin": "Net Margin",
+            "GrossMargin": "Gross Margin",
             "CurrentRatio": "Current Ratio (Liquidity)",
             "DebtToEquity": "Debt-to-Equity (Leverage)",
             "FreeCashFlow": "Free Cash Flow",

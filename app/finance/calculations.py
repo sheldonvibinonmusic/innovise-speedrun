@@ -366,3 +366,95 @@ def calculate_debt_to_equity(
         source_fact_ids=src_ids,
         validation_outcome="VALID",
     )
+
+
+def calculate_gross_margin(
+    gross_profit_or_cogs: Any,
+    revenue: Any,
+    is_cogs: bool = False,
+) -> CalculationResult:
+    """Calculate gross profit margin = (Gross Profit / Total Revenue) * 100."""
+    err = _validate_comparability(gross_profit_or_cogs, revenue)
+    if err:
+        err.metric_name = "GrossMargin"
+        err.formula = "((TotalRevenue - CostOfRevenue) / TotalRevenue) * 100" if is_cogs else "(GrossProfit / TotalRevenue) * 100"
+        return err
+
+    cid = f"calc_{uuid.uuid4().hex[:10]}"
+    rev_val = Decimal(str(_get_fact_val(revenue, "numeric_value", "0")))
+    op_val = Decimal(str(_get_fact_val(gross_profit_or_cogs, "numeric_value", "0")))
+
+    rev_period = _get_fact_val(revenue, "period_type", "annual")
+    rev_scope = _get_fact_val(revenue, "reporting_scope", "consolidated")
+    src_ids = [_get_fact_val(gross_profit_or_cogs, "id"), _get_fact_val(revenue, "id")]
+
+    if rev_val == Decimal("0"):
+        return CalculationResult(
+            calculation_id=cid,
+            metric_name="GrossMargin",
+            formula="(GrossProfit / TotalRevenue) * 100",
+            numeric_result=None,
+            formatted_result="N/A (Div by zero)",
+            unit="%",
+            reporting_period=rev_period,
+            reporting_scope=rev_scope,
+            source_fact_ids=src_ids,
+            validation_outcome="DIVIDE_BY_ZERO",
+            warnings=["Total revenue is zero; gross margin mathematically undefined."],
+        )
+
+    gp_val = (rev_val - op_val) if is_cogs else op_val
+    margin = (gp_val / rev_val) * Decimal("100")
+    margin_rounded = margin.quantize(Decimal("0.01"))
+
+    formula_str = "((TotalRevenue - CostOfRevenue) / TotalRevenue) * 100" if is_cogs else "(GrossProfit / TotalRevenue) * 100"
+    return CalculationResult(
+        calculation_id=cid,
+        metric_name="GrossMargin",
+        formula=formula_str,
+        numeric_result=margin_rounded,
+        formatted_result=f"{margin_rounded:.2f}%",
+        unit="%",
+        reporting_period=rev_period,
+        reporting_scope=rev_scope,
+        source_fact_ids=src_ids,
+        validation_outcome="VALID",
+    )
+
+
+def calculate_free_cash_flow(
+    operating_cash_flow: Any,
+    capex: Any,
+) -> CalculationResult:
+    """Calculate Free Cash Flow = Operating Cash Flow - Capital Expenditures."""
+    err = _validate_comparability(operating_cash_flow, capex)
+    if err:
+        err.metric_name = "FreeCashFlow"
+        err.formula = "OperatingCashFlow - CapitalExpenditures"
+        return err
+
+    cid = f"calc_{uuid.uuid4().hex[:10]}"
+    ocf_val = Decimal(str(_get_fact_val(operating_cash_flow, "numeric_value", "0")))
+    capex_val = Decimal(str(_get_fact_val(capex, "numeric_value", "0")))
+
+    ocf_period = _get_fact_val(operating_cash_flow, "period_type", "annual")
+    ocf_scope = _get_fact_val(operating_cash_flow, "reporting_scope", "consolidated")
+    src_ids = [_get_fact_val(operating_cash_flow, "id"), _get_fact_val(capex, "id")]
+
+    fcf = ocf_val - abs(capex_val)
+    fcf_rounded = fcf.quantize(Decimal("0.01"))
+    curr = _get_fact_val(operating_cash_flow, "currency", "USD")
+    scale = _get_fact_val(operating_cash_flow, "unit_scale", "ONES")
+
+    return CalculationResult(
+        calculation_id=cid,
+        metric_name="FreeCashFlow",
+        formula="OperatingCashFlow - abs(CapitalExpenditures)",
+        numeric_result=fcf_rounded,
+        formatted_result=f"{fcf_rounded} {curr} ({scale})",
+        unit=curr,
+        reporting_period=ocf_period,
+        reporting_scope=ocf_scope,
+        source_fact_ids=src_ids,
+        validation_outcome="VALID",
+    )

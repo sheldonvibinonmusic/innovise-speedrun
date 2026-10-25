@@ -296,7 +296,33 @@ INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
 
 ---
 
-### Journey 5: Direct PDF Export via REST API
+### Journey 6: Evidence Provenance Inspector & Claim Override
+
+1. Within any generated research dossier, browse the **Core Verified Findings & Claims** or **Risk Factors & Contradictory Disclosures**.
+2. Click **Inspect Evidence &rarr;** on any finding card or citation pill.
+3. The **Evidence Provenance Inspector Drawer** slides out from the right, displaying:
+   - The authoritative finding statement and materiality rating.
+   - The exact verbatim source excerpt extracted from primary document chunks.
+   - The verified source document ID and exact physical page coordinate.
+   - The tripartite verification outcome (`VERIFIED`, `QUALIFIED`, or `BLOCKED`).
+   - Analyst claim overrides (`Confirm`, `Caveat`, `Reject`) which update the claim record in real time.
+4. Close the drawer using the close button (&times;), clicking the backdrop, or pressing the `Escape` key.
+
+---
+
+### Journey 7: Corporate Controller Financial Summary & Solvency Analysis
+
+1. Synthesized reports automatically partition the executive summary into executive-level controller briefing sections:
+   - **Executive Analytical Stance**: High-level verdict, scope, and key ratios.
+   - **Profit & Loss (P&L) Trajectory**: Total Revenue, YoY growth, Gross Profit & Gross Margin, Operating Margin, Net Profit Margin.
+   - **Cash Flow Dynamics & Reinvestment**: Operating Cash Flow, Capital Expenditures (CapEx), discretionary Free Cash Flow, Current Liquidity Ratio.
+   - **Balance Sheet & Solvency Structure**: Stockholders' Equity book value, Total Debt, Debt-to-Equity gearing ratio, and Cash reserves.
+   - **Controller Assessment & Audit Posture**: Practical accounting commentary and risk headwinds.
+2. In the event an unrelated document is uploaded (e.g., researching MSFT while uploading an Amazon filing), the system's **Fidelity & Entity Mismatch Detector** detects the discrepancy, logs a `DOCUMENT_ENTITY_MISMATCH` disclosure, and provides a qualified fallback analysis without crashing or failing with 500 errors.
+
+---
+
+### Journey 8: Direct PDF Export via REST API
 
 You can also export reports directly via HTTP:
 
@@ -335,7 +361,7 @@ The server returns binary `application/pdf` data suitable for institutional arch
 │   ├── assets/js/               # app.js, api.js, state.js
 │   ├── assets/css/              # Custom design system tokens & glass styling
 │   └── index.html               # Frontend dashboard entry point
-├── tests/                       # 67 automated unit, integration, and E2E tests
+├── tests/                       # 69 automated unit, integration, and E2E tests
 │   ├── unit/                    # Fast isolated component tests
 │   ├── integration/             # Multi-component & database integration tests
 │   └── end_to_end/              # Complete vertical slice journey & PDF export tests

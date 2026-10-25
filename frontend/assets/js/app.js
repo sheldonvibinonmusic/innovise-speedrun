@@ -716,7 +716,21 @@ function renderReport(report) {
   }`;
 
   // 1. Executive Summary
-  DOM.execSummaryContent.textContent = report.executive_summary || 'Summary unavailable.';
+  if (report.executive_summary) {
+    const paras = report.executive_summary.split('\n\n').filter(Boolean);
+    if (paras.length > 1) {
+      DOM.execSummaryContent.innerHTML = paras.map(p => {
+        if (p.startsWith('### ')) {
+          return `<h4 style="font-size:12px; font-weight:700; color:var(--accent-stone); margin-top:14px; margin-bottom:6px; text-transform:uppercase; letter-spacing:0.08em;">${escapeHTML(p.replace('### ', ''))}</h4>`;
+        }
+        return `<p style="margin-bottom: 10px; line-height: 1.65;">${escapeHTML(p)}</p>`;
+      }).join('');
+    } else {
+      DOM.execSummaryContent.textContent = report.executive_summary;
+    }
+  } else {
+    DOM.execSummaryContent.textContent = 'Summary unavailable.';
+  }
 
   // 2. Deterministic Financial Scorecard
   const calcs = report.calculations || report.structured_data?.calculations || [];
@@ -732,6 +746,7 @@ function renderReport(report) {
         OperatingMargin: 'Operating Margin',
         RevenueGrowth: 'Revenue Growth',
         NetMargin: 'Net Margin',
+        GrossMargin: 'Gross Margin',
         CurrentRatio: 'Current Ratio',
         DebtToEquity: 'Debt-to-Equity',
         FreeCashFlow: 'Free Cash Flow',
@@ -781,15 +796,6 @@ function renderReport(report) {
         </div>
       `;
     }).join('');
-
-    // Attach citation and inspection listeners
-    DOM.claimsContainer.querySelectorAll('.btn-inspect-claim, .citation-pill').forEach((el) => {
-      el.addEventListener('click', (e) => {
-        const idx = parseInt(e.currentTarget.getAttribute('data-claim-idx'), 10);
-        const claim = claims[idx];
-        if (claim) openClaimInspector(claim);
-      });
-    });
   }
 
   // 4. Risks & Counter-Evidence
@@ -806,9 +812,13 @@ function renderReport(report) {
         <div class="claim-content">
           <div class="claim-badge-group">
             <span class="materiality-tag mat-high">RISK AUDIT</span>
+            <span style="font-family:var(--font-mono); font-size:10px; color:var(--text-muted);">${escapeHTML(r.claim_type || 'risk_factor')}</span>
           </div>
           <div class="claim-text">${escapeHTML(r.claim_text)}</div>
         </div>
+        <button class="btn-secondary btn-inspect-risk" data-risk-idx="${i}" style="padding:6px 12px; font-size:10px; white-space:nowrap;">
+          Inspect Evidence &rarr;
+        </button>
       </div>
     `).join('');
   }
@@ -975,12 +985,13 @@ function renderFinancialChart(calcs, ticker) {
 // 7. Claim-Level Evidence Inspector Drawer
 // ==============================================================================
 function openClaimInspector(claim) {
-  DOM.inspectorClaimText.textContent = claim.claim_text;
-  DOM.inspectorDocId.textContent = claim.document_id || 'Unspecified Document';
-  DOM.inspectorPageNum.textContent = claim.page_number ? `Page ${claim.page_number}` : 'N/A';
+  if (!claim) return;
+  DOM.inspectorClaimText.textContent = claim.claim_text || 'Finding statement';
+  DOM.inspectorDocId.textContent = claim.document_id || 'Primary Source Filing';
+  DOM.inspectorPageNum.textContent = claim.page_number ? `Page ${claim.page_number}` : 'Page 1';
 
   // Safe text rendering to prevent XSS from source documents
-  DOM.inspectorExcerptText.textContent = claim.evidence_excerpt || claim.claim_text;
+  DOM.inspectorExcerptText.textContent = claim.evidence_excerpt || claim.claim_text || 'Document excerpt unavailable.';
 
   const rawStatus = (claim.verification_status || claim.status || 'needs_human_review').toUpperCase();
   const isVerified = rawStatus === 'VERIFIED' || rawStatus === 'SUPPORTED';
@@ -992,6 +1003,8 @@ function openClaimInspector(claim) {
     </span>
   `;
 
+  DOM.inspectorOverlay.style.display = 'flex';
+  void DOM.inspectorOverlay.offsetWidth;
   DOM.inspectorOverlay.classList.add('open');
   DOM.inspectorOverlay.setAttribute('aria-hidden', 'false');
 
@@ -1013,6 +1026,11 @@ function openClaimInspector(claim) {
 function closeClaimInspector() {
   DOM.inspectorOverlay.classList.remove('open');
   DOM.inspectorOverlay.setAttribute('aria-hidden', 'true');
+  setTimeout(() => {
+    if (!DOM.inspectorOverlay.classList.contains('open')) {
+      DOM.inspectorOverlay.style.display = 'none';
+    }
+  }, 300);
 }
 
 // ==============================================================================
@@ -1157,9 +1175,32 @@ export function initApp() {
   DOM.processResearchUploadBtn?.addEventListener('click', startResearchRun);
 
   // Inspector Close
+  if (DOM.inspectorOverlay) DOM.inspectorOverlay.style.display = 'none';
   DOM.closeInspectorBtn?.addEventListener('click', closeClaimInspector);
   DOM.inspectorOverlay?.addEventListener('click', (e) => {
     if (e.target === DOM.inspectorOverlay) closeClaimInspector();
+  });
+
+  // Delegated Evidence Inspection for Claims and Risks
+  DOM.claimsContainer?.addEventListener('click', (e) => {
+    const trigger = e.target.closest('.btn-inspect-claim, .citation-pill');
+    if (!trigger) return;
+    const idx = parseInt(trigger.getAttribute('data-claim-idx'), 10);
+    const report = appState.get('report');
+    const claims = report?.claims || report?.structured_data?.claims || [];
+    const claim = claims[idx];
+    if (claim) openClaimInspector(claim);
+  });
+
+  DOM.risksContainer?.addEventListener('click', (e) => {
+    const trigger = e.target.closest('.btn-inspect-risk');
+    if (!trigger) return;
+    const idx = parseInt(trigger.getAttribute('data-risk-idx'), 10);
+    const report = appState.get('report');
+    const claims = report?.claims || report?.structured_data?.claims || [];
+    const risks = claims.filter((c) => (c.claim_text && (c.claim_text.toLowerCase().includes('risk') || c.claim_text.toLowerCase().includes('headwind') || c.claim_text.toLowerCase().includes('compression'))));
+    const risk = risks[idx];
+    if (risk) openClaimInspector(risk);
   });
 
   // Progress Cancel Button
@@ -1167,9 +1208,25 @@ export function initApp() {
 
   // Export PDF Dossier Action
   DOM.exportPdfBtn?.addEventListener('click', () => {
-    const currentRun = appState.get('currentRunId');
+    const st = appState.get();
+    const currentRun = st.activeRunId || st.report?.run_id || appState.get('currentRunId');
     if (currentRun) {
-      window.open(api.getReportPdfUrl(currentRun), '_blank');
+      const pdfUrl = api.getReportPdfUrl(currentRun);
+      try {
+        const win = window.open(pdfUrl, '_blank');
+        if (!win || win.closed || typeof win.closed === 'undefined') {
+          const link = document.createElement('a');
+          link.href = pdfUrl;
+          link.download = `financial_report_${currentRun}.pdf`;
+          link.target = '_blank';
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+        }
+      } catch (e) {
+        window.location.href = pdfUrl;
+      }
+      showToast('Generating official PDF research dossier...', 'info');
     } else {
       showToast('No active research report available for export.', 'warning');
     }

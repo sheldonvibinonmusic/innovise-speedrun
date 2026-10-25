@@ -160,3 +160,128 @@ def test_human_review_validation_errors(temp_env):
         json={"overall_decision": "MAYBE_VALID", "reviewer_name": "Analyst"},
     )
     assert invalid_res.status_code == 422
+
+
+def test_evidence_provenance_inspector_claim_enrichment(temp_env):
+    """Verify GET /api/reports/{run_id} enriches claims with document coordinates and evidence excerpts."""
+    client = temp_env["client"]
+    session_factory = temp_env["session_factory"]
+
+    run_id = "run_inspect_test_01"
+    doc_id = "doc_source_10k_01"
+    chunk_id = "chk_page_42_para_03"
+
+    with session_factory() as db:
+        repo = Repository(db)
+        repo.create_document(
+            document_id=doc_id,
+            company_id=None,
+            source_type="user_upload",
+            original_filename="Microsoft_10K_Audited.pdf",
+            stored_path=f"data/uploads/{doc_id}.pdf",
+            sha256_hash="d" * 64,
+        )
+        repo.create_chunk(
+            chunk_id=chunk_id,
+            document_id=doc_id,
+            chunk_index=0,
+            content="Gross margin increased by 3.2% driven by cloud infrastructure scaling and efficiency.",
+            page_number=42,
+            section_title="Management's Discussion & Analysis",
+        )
+        repo.create_run(
+            run_id=run_id,
+            research_question="Analyze cloud margin expansion",
+            company_id=None,
+            jurisdiction="US",
+            requested_periods=["FY24"],
+            input_document_ids=[doc_id],
+        )
+        repo.create_claim(
+            claim_id="clm_insp_01",
+            run_id=run_id,
+            claim_text="Gross margin increased by 3.2% driven by cloud infrastructure.",
+            claim_type="reported_fact",
+            materiality="HIGH",
+            evidence_references=[chunk_id],
+            verification_status="VERIFIED",
+        )
+        repo.create_or_update_report(
+            report_id=f"rep_{run_id}",
+            run_id=run_id,
+            executive_summary="Executive summary with verified cloud margins.",
+            report_markdown="# Report",
+            structured_data={"calculations": [], "verdicts": [], "unresolved": []},
+            verification_status="VERIFIED",
+        )
+
+    res = client.get(f"/api/reports/{run_id}")
+    assert res.status_code == 200
+    data = res.json()
+    assert len(data["claims"]) == 1
+    enriched_claim = data["claims"][0]
+    assert enriched_claim["claim_id"] == "clm_insp_01"
+    assert enriched_claim["document_id"] == doc_id
+    assert enriched_claim["page_number"] == 42
+    assert "Gross margin increased by 3.2%" in enriched_claim["evidence_excerpt"]
+    assert enriched_claim["section_title"] == "Management's Discussion & Analysis"
+
+
+def test_gross_margin_and_free_cash_flow_math():
+    """Verify deterministic precision for gross margin and free cash flow."""
+    from datetime import datetime
+    from app.finance.calculations import calculate_gross_margin, calculate_free_cash_flow
+
+    fact_rev = FinancialFact(
+        id=101,
+        company_id=None,
+        metric_name="TotalRevenue",
+        numeric_value=Decimal("245122000000.00"),
+        currency="USD",
+        unit_scale="ONES",
+        period_type="annual",
+        period_end_date=datetime(2024, 12, 31),
+        reporting_scope="consolidated",
+    )
+    fact_gp = FinancialFact(
+        id=102,
+        company_id=None,
+        metric_name="GrossProfit",
+        numeric_value=Decimal("170720000000.00"),
+        currency="USD",
+        unit_scale="ONES",
+        period_type="annual",
+        period_end_date=datetime(2024, 12, 31),
+        reporting_scope="consolidated",
+    )
+    gm_res = calculate_gross_margin(fact_gp, fact_rev, is_cogs=False)
+    assert gm_res.validation_outcome == "VALID"
+    assert gm_res.formatted_result == "69.65%"
+    assert gm_res.numeric_result == Decimal("69.65")
+
+    fact_ocf = FinancialFact(
+        id=103,
+        company_id=None,
+        metric_name="OperatingCashFlow",
+        numeric_value=Decimal("118548000000.00"),
+        currency="USD",
+        unit_scale="ONES",
+        period_type="annual",
+        period_end_date=datetime(2024, 12, 31),
+        reporting_scope="consolidated",
+    )
+    fact_capex = FinancialFact(
+        id=104,
+        company_id=None,
+        metric_name="CapitalExpenditures",
+        numeric_value=Decimal("44477000000.00"),
+        currency="USD",
+        unit_scale="ONES",
+        period_type="annual",
+        period_end_date=datetime(2024, 12, 31),
+        reporting_scope="consolidated",
+    )
+    fcf_res = calculate_free_cash_flow(fact_ocf, fact_capex)
+    assert fcf_res.validation_outcome == "VALID"
+    assert fcf_res.numeric_result == Decimal("74071000000.00")
+    assert "74071000000" in fcf_res.formatted_result

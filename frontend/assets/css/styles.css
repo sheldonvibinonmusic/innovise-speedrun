@@ -1025,7 +1025,7 @@ html, body {
   inset: 0;
   background: rgba(4, 7, 13, 0.7);
   backdrop-filter: blur(8px);
-  z-index: 100;
+  z-index: 1000;
   display: flex;
   justify-content: flex-end;
   opacity: 0;

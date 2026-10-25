@@ -44,6 +44,43 @@ def get_report(
     claims = repo.get_claims_by_run_id(run_id)
     structured = report.structured_data or {}
 
+    # Pre-fetch all referenced chunks to enrich claims with real document coordinates and excerpts
+    all_ref_ids = set()
+    for c in claims:
+        if c.evidence_references:
+            all_ref_ids.update(c.evidence_references)
+    chunk_map = {chk.id: chk for chk in repo.get_chunks_by_ids(list(all_ref_ids))}
+
+    enriched_claims = []
+    for c in claims:
+        first_chk = None
+        if c.evidence_references:
+            for ref in c.evidence_references:
+                if ref in chunk_map:
+                    first_chk = chunk_map[ref]
+                    break
+        doc_id = first_chk.document_id if first_chk else None
+        page_num = first_chk.page_number if first_chk else None
+        excerpt = first_chk.content if first_chk else c.claim_text
+        sec_title = first_chk.section_title if first_chk else None
+
+        enriched_claims.append({
+            "claim_id": c.id,
+            "claim_text": c.claim_text,
+            "claim_type": c.claim_type,
+            "materiality": c.materiality,
+            "verification_status": c.verification_status,
+            "status": c.verification_status,
+            "verification_notes": c.verification_notes,
+            "evidence_references": c.evidence_references or [],
+            "fact_ids": c.fact_ids or [],
+            "calculation_id": c.calculation_id,
+            "document_id": doc_id or "Primary Source Filing",
+            "page_number": page_num or 1,
+            "evidence_excerpt": excerpt,
+            "section_title": sec_title or "",
+        })
+
     return {
         "report_id": report.id,
         "run_id": run.id,
@@ -58,23 +95,7 @@ def get_report(
         "calculations": structured.get("calculations", []),
         "verdicts": structured.get("verdicts", []),
         "unresolved_uncertainties": structured.get("unresolved", []),
-        "claims": [
-            {
-                "claim_id": c.id,
-                "claim_text": c.claim_text,
-                "claim_type": c.claim_type,
-                "materiality": c.materiality,
-                "verification_status": c.verification_status,
-                "status": c.verification_status,
-                "verification_notes": c.verification_notes,
-                "evidence_references": c.evidence_references or [],
-                "fact_ids": c.fact_ids or [],
-                "calculation_id": c.calculation_id,
-                "document_id": (c.evidence_references[0].split(":")[0] if c.evidence_references and ":" in c.evidence_references[0] else (c.evidence_references[0] if c.evidence_references else None)),
-                "page_number": (int(c.evidence_references[0].split(":")[1]) if c.evidence_references and ":" in c.evidence_references[0] and c.evidence_references[0].split(":")[1].isdigit() else None),
-            }
-            for c in claims
-        ],
+        "claims": enriched_claims,
         "created_at": report.created_at.isoformat(),
     }
 

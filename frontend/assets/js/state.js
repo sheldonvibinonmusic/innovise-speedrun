@@ -63,7 +63,13 @@ class AppState {
     this.listeners = new Set();
   }
 
-  get() {
+  get(key) {
+    if (key === 'currentRunId') {
+      return this.state.activeRunId || this.state.report?.run_id || null;
+    }
+    if (key && typeof key === 'string') {
+      return this.state[key];
+    }
     return this.state;
   }
 

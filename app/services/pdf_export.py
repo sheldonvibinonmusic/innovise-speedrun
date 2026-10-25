@@ -148,20 +148,34 @@ class ReportPdfBuilder:
         self.y += 16.0
 
     def draw_box_text(self, text: str, border_color: Tuple[float, float, float] = (0.2, 0.4, 0.7), bg_color: Tuple[float, float, float] = (0.97, 0.98, 1.0)):
-        """Render text wrapped in an accent-bordered card."""
-        # Calculate approx height based on length
-        approx_lines = max(2, len(text) // 90 + 1)
-        needed = approx_lines * 14.0 + 18.0
-        self.check_space(needed)
-        p = self.current_page
+        """Render text wrapped in an accent-bordered card, supporting multi-paragraph controller summaries."""
+        paras = [p.strip() for p in text.split("\n\n") if p.strip()]
+        if not paras:
+            paras = [text]
 
-        rect = pymupdf.Rect(self.margin_x, self.y, self.margin_x + self.content_width, self.y + needed)
-        p.draw_rect(rect, color=border_color, fill=bg_color, width=1.0)
-        p.draw_rect(pymupdf.Rect(self.margin_x, self.y, self.margin_x + 4.0, self.y + needed), color=border_color, fill=border_color)
+        for p_idx, p_text in enumerate(paras):
+            if p_text.startswith("### "):
+                header_text = p_text.replace("### ", "").strip()
+                self.check_space(20.0)
+                p = self.current_page
+                p.insert_text((self.margin_x + 6.0, self.y + 11.0), header_text.upper(), fontsize=8.5, fontname="helv", color=(0.1, 0.25, 0.5))
+                self.y += 16.0
+                continue
 
-        inner_rect = pymupdf.Rect(self.margin_x + 12.0, self.y + 8.0, self.margin_x + self.content_width - 10.0, self.y + needed - 6.0)
-        p.insert_textbox(inner_rect, text, fontsize=9.0, fontname="helv", color=(0.12, 0.15, 0.22))
-        self.y += needed + 12.0
+            approx_lines = max(2, len(p_text) // 85 + 1)
+            needed = approx_lines * 13.0 + 14.0
+            self.check_space(needed)
+            p = self.current_page
+
+            rect = pymupdf.Rect(self.margin_x, self.y, self.margin_x + self.content_width, self.y + needed)
+            p.draw_rect(rect, color=border_color, fill=bg_color, width=0.8)
+            p.draw_rect(pymupdf.Rect(self.margin_x, self.y, self.margin_x + 3.5, self.y + needed), color=border_color, fill=border_color)
+
+            inner_rect = pymupdf.Rect(self.margin_x + 10.0, self.y + 6.0, self.margin_x + self.content_width - 8.0, self.y + needed - 4.0)
+            p.insert_textbox(inner_rect, p_text, fontsize=8.5, fontname="helv", color=(0.12, 0.15, 0.22))
+            self.y += needed + 8.0
+
+        self.y += 4.0
 
     def draw_scorecard_table(self, calculations: List[Dict[str, Any]]):
         """Render financial metric calculations table."""
