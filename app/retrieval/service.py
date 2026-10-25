@@ -108,7 +108,8 @@ class RetrievalService:
         """Rebuild both Qdrant and BM25 indices from persistent SQLite chunks."""
         stmt = (
             select(DocumentChunk, Document.company_id, Document.reporting_period)
-            .join(Document, DocumentChunk.document_id == Document.id, isouter=True)
+            .join(Document, DocumentChunk.document_id == Document.id)
+            .where(~Document.ingestion_status.in_(["NON_FINANCIAL", "NEEDS_REVIEW", "FAILED"]))
         )
         rows = db.execute(stmt).all()
         if not rows:

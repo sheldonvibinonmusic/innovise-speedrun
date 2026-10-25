@@ -80,3 +80,8 @@ desktop.ini
 logs/
 tmp/
 temp/
+
+# Private developer notes & reference guides
+CODEBASE_IMPLEMENTATION_MAP.md
+JUDGE_READY_30_MINUTE_REVISION_GUIDE.md
+

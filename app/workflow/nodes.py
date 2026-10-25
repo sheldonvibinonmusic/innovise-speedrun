@@ -121,7 +121,8 @@ async def acquire_sources_node(state: ResearchWorkflowState) -> Dict[str, Any]:
 
         # 1. Reuse existing registered documents matching company and period if no doc_ids specified
         if not doc_ids and comp:
-            existing_docs = repo.get_documents_by_company(comp.id)
+            all_existing = repo.get_documents_by_company(comp.id)
+            existing_docs = [d for d in all_existing if d.ingestion_status in ("INDEXED", "PARTIALLY_PROCESSED")]
             if existing_docs:
                 matching_docs = []
                 if primary_period:

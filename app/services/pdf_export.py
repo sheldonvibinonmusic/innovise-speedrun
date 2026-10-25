@@ -156,15 +156,16 @@ class ReportPdfBuilder:
         for p_idx, p_text in enumerate(paras):
             if p_text.startswith("### "):
                 header_text = p_text.replace("### ", "").strip()
-                self.check_space(20.0)
+                self.check_space(24.0)
                 p = self.current_page
-                p.insert_text((self.margin_x + 6.0, self.y + 11.0), header_text.upper(), fontsize=8.5, fontname="helv", color=(0.1, 0.25, 0.5))
-                self.y += 16.0
+                p.insert_text((self.margin_x + 6.0, self.y + 12.0), header_text.upper(), fontsize=9.0, fontname="helv", color=(0.1, 0.25, 0.5))
+                self.y += 18.0
                 continue
 
-            approx_lines = max(2, len(p_text) // 85 + 1)
-            needed = approx_lines * 13.0 + 14.0
-            self.check_space(needed)
+            approx_lines = max(1, (len(p_text) + 69) // 70)
+            text_height = approx_lines * 13.5
+            needed = text_height + 18.0
+            self.check_space(needed + 4.0)
             p = self.current_page
 
             rect = pymupdf.Rect(self.margin_x, self.y, self.margin_x + self.content_width, self.y + needed)
@@ -172,7 +173,9 @@ class ReportPdfBuilder:
             p.draw_rect(pymupdf.Rect(self.margin_x, self.y, self.margin_x + 3.5, self.y + needed), color=border_color, fill=border_color)
 
             inner_rect = pymupdf.Rect(self.margin_x + 10.0, self.y + 6.0, self.margin_x + self.content_width - 8.0, self.y + needed - 4.0)
-            p.insert_textbox(inner_rect, p_text, fontsize=8.5, fontname="helv", color=(0.12, 0.15, 0.22))
+            rc = p.insert_textbox(inner_rect, p_text, fontsize=8.5, fontname="helv", color=(0.12, 0.15, 0.22))
+            if rc < 0:
+                p.insert_textbox(inner_rect, p_text, fontsize=7.5, fontname="helv", color=(0.12, 0.15, 0.22))
             self.y += needed + 8.0
 
         self.y += 4.0
@@ -239,7 +242,6 @@ class ReportPdfBuilder:
         if not claims:
             return
         self.draw_section_heading(title_label)
-        p = self.current_page
 
         for cl in claims[:8]:
             ctext = cl.get("claim_text", "")
@@ -248,24 +250,30 @@ class ReportPdfBuilder:
             cites = cl.get("evidence_references", [])
             cite_str = ", ".join(cites) if cites else "Primary Filing Excerpt"
 
-            approx_h = max(24.0, (len(ctext) // 80 + 1) * 12.0 + 16.0)
-            self.check_space(approx_h)
+            full_claim_text = f"[{mat}] {ctext}"
+            approx_lines = max(1, (len(full_claim_text) + 69) // 70)
+            text_height = approx_lines * 13.5
+            card_h = text_height + 28.0
+
+            self.check_space(card_h + 6.0)
             p = self.current_page
 
-            c_rect = pymupdf.Rect(self.margin_x, self.y, self.margin_x + self.content_width, self.y + approx_h)
+            c_rect = pymupdf.Rect(self.margin_x, self.y, self.margin_x + self.content_width, self.y + card_h)
             p.draw_rect(c_rect, color=(0.85, 0.88, 0.92), fill=(0.99, 0.99, 1.0), width=0.6)
 
             # Left badge bar
             bar_color = (0.1, 0.6, 0.3) if c_status in ("supported", "VERIFIED") else ((0.8, 0.5, 0.1) if c_status == "needs_human_review" else (0.8, 0.2, 0.2))
-            p.draw_rect(pymupdf.Rect(self.margin_x, self.y, self.margin_x + 3.0, self.y + approx_h), color=bar_color, fill=bar_color)
+            p.draw_rect(pymupdf.Rect(self.margin_x, self.y, self.margin_x + 3.0, self.y + card_h), color=bar_color, fill=bar_color)
 
-            # Content box
-            inner_rect = pymupdf.Rect(self.margin_x + 10.0, self.y + 4.0, self.margin_x + self.content_width - 8.0, self.y + approx_h - 14.0)
-            p.insert_textbox(inner_rect, f"[{mat}] {ctext}", fontsize=8.5, fontname="helv", color=(0.1, 0.15, 0.25))
+            # Content box with generous bounds
+            inner_rect = pymupdf.Rect(self.margin_x + 10.0, self.y + 6.0, self.margin_x + self.content_width - 8.0, self.y + 6.0 + text_height + 6.0)
+            rc = p.insert_textbox(inner_rect, full_claim_text, fontsize=8.5, fontname="helv", color=(0.1, 0.15, 0.25))
+            if rc < 0:
+                p.insert_textbox(inner_rect, full_claim_text, fontsize=7.5, fontname="helv", color=(0.1, 0.15, 0.25))
 
             # Citations footer
-            p.insert_text((self.margin_x + 10.0, self.y + approx_h - 4.0), f"Citation: {cite_str}  |  Status: {c_status}", fontsize=7.0, fontname="helv", color=(0.4, 0.5, 0.65))
-            self.y += approx_h + 6.0
+            p.insert_text((self.margin_x + 10.0, self.y + card_h - 6.0), f"Citation: {cite_str}  |  Status: {c_status}", fontsize=7.0, fontname="helv", color=(0.4, 0.5, 0.65))
+            self.y += card_h + 8.0
 
         self.y += 6.0
 
@@ -280,20 +288,25 @@ class ReportPdfBuilder:
             verdict = v.get("verdict") or v.get("overall_verdict", "INDETERMINATE")
             exp = v.get("rationale") or v.get("concise_explanation", "")
 
-            approx_h = max(34.0, (len(exp) // 85 + 1) * 12.0 + 20.0)
-            self.check_space(approx_h)
+            approx_lines = max(1, (len(exp) + 74) // 75)
+            text_height = approx_lines * 13.0
+            card_h = text_height + 28.0
+
+            self.check_space(card_h + 6.0)
             p = self.current_page
 
-            card_rect = pymupdf.Rect(self.margin_x, self.y, self.margin_x + self.content_width, self.y + approx_h)
+            card_rect = pymupdf.Rect(self.margin_x, self.y, self.margin_x + self.content_width, self.y + card_h)
             v_color = (0.1, 0.6, 0.3) if verdict == "PASS" else ((0.8, 0.5, 0.1) if verdict in ("QUALIFY", "RETRIEVE_MORE") else (0.8, 0.2, 0.2))
             p.draw_rect(card_rect, color=(0.85, 0.88, 0.92), fill=(0.98, 0.98, 0.99), width=0.6)
 
-            p.insert_text((self.margin_x + 10.0, self.y + 13.0), role, fontsize=9.0, fontname="helv", color=(0.1, 0.15, 0.25))
-            p.insert_text((self.margin_x + self.content_width - 80.0, self.y + 13.0), f"[{verdict}]", fontsize=9.0, fontname="helv", color=v_color)
+            p.insert_text((self.margin_x + 10.0, self.y + 13.0), role, fontsize=8.5, fontname="helv", color=(0.1, 0.15, 0.25))
+            p.insert_text((self.margin_x + self.content_width - 80.0, self.y + 13.0), f"[{verdict}]", fontsize=8.5, fontname="helv", color=v_color)
 
-            exp_rect = pymupdf.Rect(self.margin_x + 10.0, self.y + 16.0, self.margin_x + self.content_width - 10.0, self.y + approx_h - 4.0)
-            p.insert_textbox(exp_rect, exp, fontsize=8.0, fontname="helv", color=(0.3, 0.35, 0.45))
-            self.y += approx_h + 6.0
+            exp_rect = pymupdf.Rect(self.margin_x + 10.0, self.y + 18.0, self.margin_x + self.content_width - 10.0, self.y + 18.0 + text_height + 6.0)
+            rc = p.insert_textbox(exp_rect, exp, fontsize=8.0, fontname="helv", color=(0.3, 0.35, 0.45))
+            if rc < 0:
+                p.insert_textbox(exp_rect, exp, fontsize=7.0, fontname="helv", color=(0.3, 0.35, 0.45))
+            self.y += card_h + 8.0
 
         self.y += 6.0
 
@@ -303,7 +316,7 @@ class ReportPdfBuilder:
         self.draw_section_heading("Institutional Analyst Governance Sign-Off")
         p = self.current_page
 
-        box_h = 56.0
+        box_h = 60.0
         rect = pymupdf.Rect(self.margin_x, self.y, self.margin_x + self.content_width, self.y + box_h)
         p.draw_rect(rect, color=(0.2, 0.3, 0.5), fill=(0.96, 0.97, 0.99), width=0.8)
 
@@ -315,11 +328,12 @@ class ReportPdfBuilder:
         d_color = (0.1, 0.6, 0.3) if decision == "APPROVED" else ((0.8, 0.5, 0.1) if decision == "QUALIFIED" else (0.8, 0.2, 0.2))
 
         p.insert_text((self.margin_x + 10.0, self.y + 16.0), f"Reviewer: {rev_name}", fontsize=8.5, fontname="helv", color=(0.1, 0.15, 0.25))
-        p.insert_text((self.margin_x + 240.0, self.y + 16.0), f"Decision: {decision}", fontsize=8.5, fontname="helv", color=d_color)
+        p.insert_text((self.margin_x + 230.0, self.y + 16.0), f"Decision: {decision}", fontsize=8.5, fontname="helv", color=d_color)
         p.insert_text((self.margin_x + 360.0, self.y + 16.0), f"Timestamp: {rev_date[:16]}", fontsize=7.5, fontname="helv", color=(0.4, 0.45, 0.55))
 
         p.draw_line((self.margin_x + 10.0, self.y + 24.0), (self.margin_x + self.content_width - 10.0, self.y + 24.0), color=(0.85, 0.88, 0.92), width=0.5)
-        p.insert_text((self.margin_x + 10.0, self.y + 38.0), f"Notes: {comments[:120]}", fontsize=8.0, fontname="helv", color=(0.25, 0.3, 0.4))
+        notes_rect = pymupdf.Rect(self.margin_x + 10.0, self.y + 28.0, self.margin_x + self.content_width - 10.0, self.y + box_h - 4.0)
+        p.insert_textbox(notes_rect, f"Notes: {comments}", fontsize=8.0, fontname="helv", color=(0.25, 0.3, 0.4))
         self.y += box_h + 12.0
 
     def add_footers(self):

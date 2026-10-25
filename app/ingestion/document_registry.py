@@ -12,6 +12,11 @@ from app.db.models import Document
 from app.db.repository import Repository
 from app.ingestion.chunking import DocumentChunker
 from app.ingestion.parser import DocumentParser, ParsedDocument
+from app.ingestion.quality_checks import (
+    assess_document_content,
+    generate_page_summaries,
+    save_document_summary_sidecar,
+)
 from app.ingestion.tables import TableExtractor
 from app.retrieval.service import RetrievalService, retrieval_service
 
@@ -69,7 +74,50 @@ class DocumentIngestionService:
             )
             return {"status": "FAILED", "error": err_msg}
 
-        # 3. Update status to PARSED
+        # 3. Assess document content & generate page summaries
+        assessment = assess_document_content(parsed_doc)
+        page_summaries = generate_page_summaries(parsed_doc)
+
+        # Save sidecar JSON atomically within the upload directory
+        save_document_summary_sidecar(
+            stored_doc_path=file_path,
+            assessment=assessment,
+            pages=page_summaries,
+        )
+
+        all_warnings = list(parsed_doc.warnings)
+        for w in assessment.warnings:
+            if w not in all_warnings:
+                all_warnings.append(w)
+        warnings_str = "; ".join(all_warnings) if all_warnings else None
+
+        # Content classification gate: block non-financial or uncertain documents from fact extraction and RAG indexing
+        if assessment.classification in ("NON_FINANCIAL", "UNCERTAIN"):
+            # Clean up any prior facts/chunks if document was re-processed
+            repo.delete_facts_by_document(document_id)
+            repo.delete_chunks_by_document(document_id)
+            self.retrieval.vector_store.delete_document_vectors(document_id)
+
+            status = "NON_FINANCIAL" if assessment.classification == "NON_FINANCIAL" else "NEEDS_REVIEW"
+            repo.update_document_status(
+                document_id=document_id,
+                status=status,
+                page_count=parsed_doc.page_count,
+                extraction_warnings=warnings_str,
+                parser_version=parsed_doc.parser_version,
+            )
+            return {
+                "document_id": document_id,
+                "status": status,
+                "classification": assessment.classification,
+                "page_count": parsed_doc.page_count,
+                "chunks_indexed": 0,
+                "facts_extracted": 0,
+                "warnings": all_warnings,
+                "assessment": assessment.to_dict(),
+            }
+
+        # 4. Document confirmed financial: Update status to PARSED
         repo.update_document_status(
             document_id=document_id,
             status="PARSED",
@@ -79,7 +127,7 @@ class DocumentIngestionService:
 
         company_ticker = doc.company.ticker if doc.company else None
 
-        # 4. Extract Canonical Financial Facts from Tables
+        # 5. Extract Canonical Financial Facts from Tables
         extracted_facts = self.table_extractor.extract_facts_from_tables(
             tables=parsed_doc.tables,
             document_id=document_id,
@@ -87,14 +135,14 @@ class DocumentIngestionService:
             default_period=doc.reporting_period,
         )
 
-        # 5. Create Page-Aware and Table-Aware Chunks
+        # 6. Create Page-Aware and Table-Aware Chunks
         chunks = self.chunker.chunk_document(
             doc=parsed_doc,
             company_ticker=company_ticker,
             reporting_period=doc.reporting_period,
         )
 
-        # 6. Update status to INDEXING
+        # 7. Update status to INDEXING
         repo.update_document_status(document_id=document_id, status="INDEXING")
 
         # Idempotently clear prior facts & chunks for this document
@@ -108,7 +156,7 @@ class DocumentIngestionService:
         if chunks:
             repo.bulk_create_chunks(chunks)
 
-        # 7. Dense & Lexical Indexing
+        # 8. Dense & Lexical Indexing
         if chunks:
             self.retrieval.index_document_chunks(
                 chunks=chunks,
@@ -116,9 +164,8 @@ class DocumentIngestionService:
                 reporting_period=doc.reporting_period,
             )
 
-        # 8. Set final status
+        # 9. Set final status
         final_status = "INDEXED" if parsed_doc.status == "COMPLETE" else "PARTIALLY_PROCESSED"
-        warnings_str = "; ".join(parsed_doc.warnings) if parsed_doc.warnings else None
 
         repo.update_document_status(
             document_id=document_id,
@@ -131,10 +178,12 @@ class DocumentIngestionService:
         return {
             "document_id": document_id,
             "status": final_status,
+            "classification": assessment.classification,
             "page_count": parsed_doc.page_count,
             "chunks_indexed": len(chunks),
             "facts_extracted": len(extracted_facts),
-            "warnings": parsed_doc.warnings,
+            "warnings": all_warnings,
+            "assessment": assessment.to_dict(),
         }
 
 

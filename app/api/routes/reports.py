@@ -121,6 +121,7 @@ def get_report(
 )
 def export_report_pdf(
     run_id: str,
+    inline: bool = False,
     repo: Repository = Depends(get_repository),
 ) -> Response:
     """Generate and download publication-ready institutional research report PDF."""
@@ -128,11 +129,14 @@ def export_report_pdf(
     pdf_bytes = generate_report_pdf(report_data)
     ticker = report_data.get("company_ticker") or "REPORT"
     filename = f"financial_research_{ticker}_{run_id}.pdf"
+    disposition = "inline" if inline else "attachment"
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
         headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Disposition": f'{disposition}; filename="{filename}"',
             "Content-Type": "application/pdf",
+            "Content-Length": str(len(pdf_bytes)),
+            "Accept-Ranges": "bytes",
         },
     )

@@ -1,6 +1,6 @@
 # Trustworthy Multi-Agent Financial Research & Decision Support System
 
-[![Tests](https://img.shields.io/badge/Tests-67%20Passed-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-80%20Passed-brightgreen)](tests/)
 [![Python](https://img.shields.io/badge/Python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.14-blue)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688)](https://fastapi.tiangolo.com/)
 [![Architecture](https://img.shields.io/badge/Architecture-LangGraph%20Multi--Agent-orange)](app/workflow/)
@@ -14,13 +14,14 @@ An enterprise-grade, citation-backed AI research assistant designed to assist fi
 
 Conventional LLM financial analysis suffers from critical failure modes: arithmetic hallucinations, untraceable assertions, lack of counter-evidence review, and failure to reconcile conflicting disclosures. 
 
-This platform solves these problems through a **six-tier verification architecture**:
+This platform solves these problems through a **seven-tier verification architecture**:
 1. **Verifiable Claim-Level Provenance**: Every metric, fact, and assertion is bound to an exact document ID, page number, and table reference with SHA-256 data integrity checks.
 2. **Deterministic Arithmetic Engine**: Operating margins, revenue trajectories, current ratios, and leverage metrics are computed exclusively in Python code (`Decimal`/`pandas`), completely bypassing LLM arithmetic.
 3. **Tripartite Independent Verification**: Analytical outputs are audited by three independent, non-majority judges: an **Evidence & Citation Auditor**, a **Numerical Integrity Auditor**, and an **Adversarial Skeptic**.
 4. **Contradiction & Restatement Detection**: Actively interrogates disclosures for conflicting restatements, operating headwinds, litigation risks, or margin contractions between MD&A narratives and audited financial tables.
 5. **Supervisor-Directed Bounded Repair**: An autonomous **Research Quality Supervisor ("The Third Eye")** evaluates workflow state, detects evidence gaps, and triggers targeted recovery retrieval.
 6. **Publication-Ready Vector PDF Export**: Generates high-resolution institutional research reports featuring embedded Matplotlib financial performance charts, audit scorecards, and human-review cockpit sign-off blocks with zero external web dependencies.
+7. **Non-Financial PDF Guard & Grounded Page Summaries**: Automatic heuristic content gate blocks non-financial documents (e.g. handbooks, resumes) from polluting financial fact extraction or RAG indices, coupled with structured `GET /api/documents/{id}/pages` extraction summaries and quality metrics.
 
 ---
 

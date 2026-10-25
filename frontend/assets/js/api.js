@@ -188,6 +188,13 @@ class ApiClient {
     });
   }
 
+  // --- Document Page Summaries & Assessment ---
+  async getDocumentPages(documentId) {
+    return this.request(`/documents/${encodeURIComponent(documentId)}/pages`, {
+      method: 'GET',
+    });
+  }
+
   // --- Research Run Lifecycle ---
   async createRun(payload) {
     return this.request('/runs', {

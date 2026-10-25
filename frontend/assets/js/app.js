@@ -120,6 +120,15 @@ function cacheDOMElements() {
     claimQualifyBtn: document.getElementById('claimQualifyBtn'),
     claimRejectBtn: document.getElementById('claimRejectBtn'),
 
+    // Page Summaries Drawer
+    pageSummariesOverlay: document.getElementById('pageSummariesOverlay'),
+    pageSummariesDrawer: document.getElementById('pageSummariesDrawer'),
+    pageSummariesTitle: document.getElementById('pageSummariesTitle'),
+    pageSummariesSubTitle: document.getElementById('pageSummariesSubTitle'),
+    closePageSummariesBtn: document.getElementById('closePageSummariesBtn'),
+    pageSummariesAssessmentBox: document.getElementById('pageSummariesAssessmentBox'),
+    pageSummariesList: document.getElementById('pageSummariesList'),
+
     // Human Review Cockpit
     decApproveBtn: document.getElementById('decApproveBtn'),
     decQualifyBtn: document.getElementById('decQualifyBtn'),
@@ -383,15 +392,34 @@ function renderUploadQueue() {
 
   DOM.queueRowsList.innerHTML = queue.map((item) => {
     let badgeClass = 'badge-queued';
-    if (item.status === 'UPLOADING') badgeClass = 'badge-uploading';
-    if (item.status === 'INDEXED' || item.status === 'UPLOADED') badgeClass = 'badge-indexed';
-    if (item.status === 'FAILED' || item.status === 'REJECTED') badgeClass = 'badge-failed';
+    let statusLabel = item.status;
+    if (item.status === 'UPLOADING') {
+      badgeClass = 'badge-uploading';
+      statusLabel = 'UPLOADING';
+    } else if (item.status === 'INDEXED' || item.status === 'UPLOADED') {
+      badgeClass = 'badge-indexed';
+      statusLabel = 'FINANCIAL';
+    } else if (item.status === 'NON_FINANCIAL') {
+      badgeClass = 'badge-failed';
+      statusLabel = 'NON-FINANCIAL \u2014 financial analysis blocked';
+    } else if (item.status === 'NEEDS_REVIEW') {
+      badgeClass = 'badge-queued';
+      statusLabel = 'NEEDS REVIEW';
+    } else if (item.status === 'FAILED' || item.status === 'REJECTED') {
+      badgeClass = 'badge-failed';
+      statusLabel = 'FAILED';
+    }
+
+    const pageSummariesBtn = item.documentId ? `
+      <button type="button" class="btn-page-summaries btn-secondary" data-doc-id="${item.documentId}" style="padding: 2px 8px; font-size: 10px; text-transform: none; letter-spacing: normal;" title="View Page Summaries">Page summaries</button>
+    ` : '';
 
     return `
-      <div class="queue-row" data-id="${item.id}">
-        <div class="queue-file-name" title="${item.name}">${item.name}</div>
+      <div class="queue-row" data-id="${item.id}" style="grid-template-columns: minmax(110px, 1.8fr) 55px auto auto 1fr 28px;">
+        <div class="queue-file-name" title="${escapeHTML(item.name)}">${escapeHTML(item.name)}</div>
         <div style="font-family:var(--font-mono); font-size:10px; color:var(--text-muted);">${(item.size / 1024).toFixed(1)} KB</div>
-        <div><span class="queue-status-badge ${badgeClass}">${item.status}</span></div>
+        <div><span class="queue-status-badge ${badgeClass}" title="${escapeHTML(item.error || statusLabel)}">${escapeHTML(statusLabel)}</span></div>
+        <div>${pageSummariesBtn}</div>
         <div class="queue-progress-bar">
           <div class="queue-progress-fill" style="width: ${item.percent}%;"></div>
         </div>
@@ -399,6 +427,14 @@ function renderUploadQueue() {
       </div>
     `;
   }).join('');
+
+  // Attach page summaries handlers
+  DOM.queueRowsList.querySelectorAll('.btn-page-summaries').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      const docId = e.currentTarget.getAttribute('data-doc-id');
+      if (docId) openPageSummaries(docId);
+    });
+  });
 
   // Attach remove handlers
   DOM.queueRowsList.querySelectorAll('.btn-remove-queue').forEach((btn) => {
@@ -443,11 +479,26 @@ async function uploadQueuedFiles() {
 
         const uploadedDoc = uploadResult.uploaded_documents?.[0];
         current.documentId = uploadedDoc?.document_id || null;
+        current.classification = uploadedDoc?.classification || null;
+        current.warnings = uploadedDoc?.warnings || null;
         const ingestStatus = (uploadedDoc?.status || uploadedDoc?.ingestion_status || 'REGISTERED').toUpperCase();
 
         if (ingestStatus === 'INDEXED' || ingestStatus === 'PARTIALLY_PROCESSED') {
           current.status = 'INDEXED';
+          current.classification = 'FINANCIAL';
           current.percent = 100;
+        } else if (ingestStatus === 'NON_FINANCIAL') {
+          current.status = 'NON_FINANCIAL';
+          current.classification = 'NON_FINANCIAL';
+          current.percent = 100;
+          current.error = uploadedDoc?.warnings || 'Non-financial document detected. Financial analysis blocked.';
+          showToast(`Document ${current.name} is not a financial disclosure. Financial analysis blocked.`, 'warning');
+        } else if (ingestStatus === 'NEEDS_REVIEW') {
+          current.status = 'NEEDS_REVIEW';
+          current.classification = 'UNCERTAIN';
+          current.percent = 100;
+          current.error = uploadedDoc?.warnings || 'Classification uncertain. Needs manual review.';
+          showToast(`Document ${current.name} requires manual review.`, 'warning');
         } else if (ingestStatus === 'FAILED') {
           current.status = 'FAILED';
           current.error = uploadedDoc?.warnings || 'Document parsing/indexing failed';
@@ -497,7 +548,21 @@ async function startResearchRun() {
       showToast('Uploads failed. Resolve errors before proceeding.', 'error');
       return;
     }
-    docIds = appState.get().uploadQueue.filter((f) => f.documentId).map((f) => f.documentId);
+
+    const readyDocs = appState.get().uploadQueue.filter(
+      (f) => f.documentId && (f.status === 'INDEXED' || f.status === 'PARTIALLY_PROCESSED') && f.classification !== 'NON_FINANCIAL' && f.classification !== 'UNCERTAIN'
+    );
+
+    if (readyDocs.length === 0) {
+      const nonFinDocs = appState.get().uploadQueue.filter((f) => f.classification === 'NON_FINANCIAL' || f.status === 'NON_FINANCIAL');
+      if (nonFinDocs.length > 0) {
+        showToast('Uploaded document(s) are classified as non-financial. Financial research cannot be executed on non-financial documents.', 'error');
+      } else {
+        showToast('No indexed financial documents available. Please upload a valid financial filing.', 'error');
+      }
+      return;
+    }
+    docIds = readyDocs.map((f) => f.documentId);
   }
 
   const isWebMode = appState.get().mode === 'web';
@@ -1034,6 +1099,128 @@ function closeClaimInspector() {
 }
 
 // ==============================================================================
+// 7b. Document Page Summaries & Content Assessment Modal
+// ==============================================================================
+async function openPageSummaries(documentId) {
+  if (!documentId) return;
+
+  DOM.pageSummariesTitle.textContent = 'Document Extraction Summaries';
+  DOM.pageSummariesSubTitle.textContent = `DOCUMENT ID: ${escapeHTML(documentId)} \u2022 LOADING...`;
+  DOM.pageSummariesAssessmentBox.innerHTML = `
+    <div style="font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); padding: 12px; background: rgba(4,7,13,0.5); border: 1px solid var(--border-fine); border-radius: 4px;">
+      Loading page extraction summaries and quality assessment...
+    </div>
+  `;
+  DOM.pageSummariesList.innerHTML = '';
+
+  DOM.pageSummariesOverlay.style.display = 'flex';
+  void DOM.pageSummariesOverlay.offsetWidth;
+  DOM.pageSummariesOverlay.classList.add('open');
+  DOM.pageSummariesOverlay.setAttribute('aria-hidden', 'false');
+
+  try {
+    const data = await api.getDocumentPages(documentId);
+    const assessment = data.assessment || {};
+    const pages = data.pages || [];
+    const classification = (assessment.classification || 'UNCERTAIN').toUpperCase();
+
+    let clsBadge = 'badge-queued';
+    let clsText = classification;
+    if (classification === 'FINANCIAL') {
+      clsBadge = 'badge-verified';
+      clsText = 'FINANCIAL DISCLOSURE';
+    } else if (classification === 'NON_FINANCIAL') {
+      clsBadge = 'badge-blocked';
+      clsText = 'NON-FINANCIAL \u2014 FINANCIAL ANALYSIS BLOCKED';
+    } else {
+      clsBadge = 'badge-qualified';
+      clsText = 'UNCERTAIN / NEEDS REVIEW';
+    }
+
+    DOM.pageSummariesSubTitle.textContent = `${escapeHTML(data.original_filename || documentId)} \u2022 ${pages.length} Pages \u2022 Method: ${escapeHTML(data.summary_method || 'extractive_heuristic')}`;
+
+    const signalsList = (assessment.signals || []).map((s) => `<li>${escapeHTML(s)}</li>`).join('');
+    const warningsList = (assessment.warnings || []).map((w) => `<li>${escapeHTML(w)}</li>`).join('');
+
+    DOM.pageSummariesAssessmentBox.innerHTML = `
+      <div style="padding: 12px; background: rgba(11, 16, 26, 0.7); border: 1px solid var(--border-fine); border-radius: 4px; font-size: 12px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <span style="font-family:var(--font-mono); font-size:11px; text-transform:uppercase; color:var(--text-secondary);">Quality Assessment</span>
+          <span class="report-verification-badge ${clsBadge}">${escapeHTML(clsText)}</span>
+        </div>
+        <div style="font-family:var(--font-mono); font-size:11px; color:var(--text-muted); margin-bottom:6px;">
+          Heuristic Confidence: <strong>${Math.round((assessment.heuristic_score || 0) * 100)}%</strong> &bull; Grounded Extractive Heuristic (No synthetic text)
+        </div>
+        ${signalsList ? `<div style="margin-top:6px; font-size:11.5px; color:var(--text-secondary);"><strong>Evidence Signals:</strong><ul style="margin:4px 0 0 16px; padding:0;">${signalsList}</ul></div>` : ''}
+        ${warningsList ? `<div style="margin-top:6px; font-size:11.5px; color:var(--status-qualified);"><strong>Assessment Notes / Warnings:</strong><ul style="margin:4px 0 0 16px; padding:0;">${warningsList}</ul></div>` : ''}
+      </div>
+    `;
+
+    if (pages.length === 0) {
+      DOM.pageSummariesList.innerHTML = `
+        <div style="font-family:var(--font-mono); font-size:11px; color:var(--text-muted); padding:20px; text-align:center;">
+          No page summaries recorded for this document.
+        </div>
+      `;
+      return;
+    }
+
+    DOM.pageSummariesList.innerHTML = pages.map((p) => {
+      let kindBadge = 'badge-queued';
+      let kindLabel = p.content_kind || 'text';
+      if (p.content_kind === 'table') {
+        kindBadge = 'badge-indexed';
+        kindLabel = 'TABLE';
+      } else if (p.content_kind === 'mixed') {
+        kindBadge = 'badge-uploading';
+        kindLabel = 'TEXT + TABLES';
+      } else if (p.content_kind === 'no_extractable_text') {
+        kindBadge = 'badge-failed';
+        kindLabel = 'UNREADABLE / SCANNED';
+      } else {
+        kindLabel = 'NARRATIVE TEXT';
+      }
+
+      const pWarns = (p.warnings || []).map((w) => `<div style="color:var(--status-qualified); font-size:10.5px; margin-top:4px;">! ${escapeHTML(w)}</div>`).join('');
+
+      return `
+        <div style="padding: 12px; background: rgba(4,7,13,0.6); border: 1px solid var(--border-fine); border-radius: 4px; font-size: 12px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <div style="font-family:var(--font-mono); font-weight:600; color:var(--accent-stone);">
+              Page ${p.page_number}
+              <span style="font-size:10px; font-weight:normal; color:var(--text-muted); margin-left:6px;">(${p.extracted_characters} chars${p.table_count > 0 ? `, ${p.table_count} table(s)` : ''})</span>
+            </div>
+            <span class="queue-status-badge ${kindBadge}">${escapeHTML(kindLabel)}</span>
+          </div>
+          <div style="font-size:12px; line-height:1.5; color:var(--text-primary); background:rgba(0,0,0,0.25); padding:8px 10px; border-radius:3px; border-left:2px solid var(--border-fine);">
+            ${escapeHTML(p.summary || 'No summary text available.')}
+          </div>
+          ${pWarns}
+        </div>
+      `;
+    }).join('');
+
+  } catch (err) {
+    DOM.pageSummariesAssessmentBox.innerHTML = `
+      <div style="font-family: var(--font-mono); font-size: 11px; color: var(--status-blocked); padding: 12px; background: rgba(240,82,82,0.08); border: 1px solid rgba(240,82,82,0.25); border-radius: 4px;">
+        Failed to load page summaries: ${escapeHTML(err.message || 'API request failed')}
+      </div>
+    `;
+    showToast(`Failed to load page summaries: ${err.message}`, 'error');
+  }
+}
+
+function closePageSummaries() {
+  DOM.pageSummariesOverlay.classList.remove('open');
+  DOM.pageSummariesOverlay.setAttribute('aria-hidden', 'true');
+  setTimeout(() => {
+    if (!DOM.pageSummariesOverlay.classList.contains('open')) {
+      DOM.pageSummariesOverlay.style.display = 'none';
+    }
+  }, 300);
+}
+
+// ==============================================================================
 // 8. Human Review Sign-Off Cockpit Submission
 // ==============================================================================
 async function handleSubmitReview() {
@@ -1179,6 +1366,13 @@ export function initApp() {
   DOM.closeInspectorBtn?.addEventListener('click', closeClaimInspector);
   DOM.inspectorOverlay?.addEventListener('click', (e) => {
     if (e.target === DOM.inspectorOverlay) closeClaimInspector();
+  });
+
+  // Page Summaries Drawer Close
+  if (DOM.pageSummariesOverlay) DOM.pageSummariesOverlay.style.display = 'none';
+  DOM.closePageSummariesBtn?.addEventListener('click', closePageSummaries);
+  DOM.pageSummariesOverlay?.addEventListener('click', (e) => {
+    if (e.target === DOM.pageSummariesOverlay) closePageSummaries();
   });
 
   // Delegated Evidence Inspection for Claims and Risks
